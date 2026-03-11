@@ -7,7 +7,7 @@ module Lsp::Crystal::Handlers
 
       doc = server.document_store.get(uri)
       unless doc
-        return JSONRPC::Response.success(id, [] of Providers::DocumentSymbol::SymbolInfo)
+        return JSONRPC::Response.success(id, [] of Providers::DocumentSymbol::HierarchicalSymbolInfo)
       end
 
       symbols = Providers::DocumentSymbol.run(doc)

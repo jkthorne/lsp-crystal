@@ -4,13 +4,26 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 
 ## Features
 
-- **Diagnostics** — Real-time error reporting via `crystal build --no-codegen` with 500ms debounce
-- **Completion** — Keywords, context-aware suggestions (after `.`), and document symbol completion
+### Navigation
+- **Go to Definition** — Jump to symbol definitions via `crystal tool implementations`
+- **Go to Implementation** — Find all implementations of abstract types
+- **Find References** — Search for symbol occurrences across the workspace
+- **Document Symbols** — Hierarchical outline of classes, methods, macros, properties, constants, and more
+- **Workspace Symbols** — Search symbols across all `.cr` files in the project
+
+### Editing
+- **Completion** — Keywords, snippets, and context-aware suggestions (trigger: `.`, `:`, `@`)
+- **Signature Help** — Method signature display with active parameter tracking (trigger: `(`, `,`)
 - **Hover** — Type information via `crystal tool context`
-- **Go to Definition** — Jump to implementations via `crystal tool implementations`
-- **Document Symbols** — Outline of classes, methods, macros, properties, and constants
+- **Rename** — Workspace-wide symbol renaming with prepare support
+- **Code Actions** — Quick fix for unused variables, organize/sort requires
 - **Formatting** — Code formatting via `crystal tool format`
-- **Signature Help** — Method signature display on `(` and `,`
+
+### Code Intelligence
+- **Diagnostics** — Real-time error and warning reporting via `crystal build --no-codegen` with 500ms debounce
+- **Document Highlight** — Highlight all occurrences of a symbol with read/write classification
+- **Folding Ranges** — Fold blocks, consecutive requires, and comment sections
+- **Selection Range** — Smart expand/shrink selection from word to block to document
 
 ## Requirements
 

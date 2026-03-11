@@ -1,2 +1,79 @@
 require "spec"
-require "../src/lsp-crystal"
+require "json"
+require "../src/lsp_crystal/version"
+require "../src/lsp_crystal/logger"
+require "../src/lsp_crystal/protocol/types"
+require "../src/lsp_crystal/protocol/uri"
+require "../src/lsp_crystal/jsonrpc/types"
+require "../src/lsp_crystal/jsonrpc/message"
+require "../src/lsp_crystal/transport/header_parser"
+require "../src/lsp_crystal/transport/stdio"
+require "../src/lsp_crystal/document_store"
+require "../src/lsp_crystal/crystal_tool"
+require "../src/lsp_crystal/providers/diagnostics"
+require "../src/lsp_crystal/dispatcher"
+require "../src/lsp_crystal/handlers/lifecycle"
+require "../src/lsp_crystal/handlers/text_sync"
+require "../src/lsp_crystal/server"
+
+class TestClient
+  getter server : Lsp::Crystal::Server
+
+  def initialize
+    input_read, @input_write = IO.pipe
+    @output_read, output_write = IO.pipe
+    transport = Lsp::Crystal::Transport::Stdio.new(input: input_read, output: output_write)
+    @server = Lsp::Crystal::Server.new(transport)
+    spawn { @server.run }
+    Fiber.yield
+  end
+
+  def send_request(id, method, params = nil)
+    msg = {jsonrpc: "2.0", id: id, method: method, params: params}.to_json
+    @input_write << "Content-Length: #{msg.bytesize}\r\n\r\n"
+    @input_write << msg
+    @input_write.flush
+  end
+
+  def send_notification(method, params = nil)
+    msg = {jsonrpc: "2.0", method: method, params: params}.to_json
+    @input_write << "Content-Length: #{msg.bytesize}\r\n\r\n"
+    @input_write << msg
+    @input_write.flush
+  end
+
+  def read_response : JSON::Any
+    line = @output_read.read_line("\r\n")
+    line = line.rstrip("\r\n")
+    length = line.split(": ")[1].to_i
+    @output_read.read_line("\r\n")
+    body = Bytes.new(length)
+    @output_read.read_fully(body)
+    JSON.parse(String.new(body))
+  end
+
+  def try_read_response(timeout : Time::Span = 100.milliseconds) : JSON::Any?
+    ch = Channel(JSON::Any?).new(1)
+    spawn do
+      ch.send(read_response)
+    rescue
+      ch.send(nil)
+    end
+    select
+    when result = ch.receive
+      result
+    when timeout(timeout)
+      nil
+    end
+  end
+
+  def initialize_server
+    send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+    read_response
+    send_notification("initialized")
+  end
+
+  def close
+    @input_write.close
+  end
+end

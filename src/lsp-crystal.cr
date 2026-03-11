@@ -1,6 +1,29 @@
-# TODO: Write documentation for `Lsp::Crystal`
-module Lsp::Crystal
-  VERSION = "0.1.0"
+require "json"
+require "yaml"
+require "log"
 
-  # TODO: Put your code here
+require "./lsp_crystal/version"
+require "./lsp_crystal/logger"
+require "./lsp_crystal/protocol/types"
+require "./lsp_crystal/protocol/uri"
+require "./lsp_crystal/jsonrpc/types"
+require "./lsp_crystal/jsonrpc/message"
+require "./lsp_crystal/transport/header_parser"
+require "./lsp_crystal/transport/stdio"
+require "./lsp_crystal/document_store"
+require "./lsp_crystal/crystal_tool"
+require "./lsp_crystal/providers/diagnostics"
+require "./lsp_crystal/dispatcher"
+require "./lsp_crystal/handlers/lifecycle"
+require "./lsp_crystal/handlers/text_sync"
+require "./lsp_crystal/server"
+
+module Lsp::Crystal
+  def self.run
+    setup_logging
+    server = Server.new
+    server.run
+  end
 end
+
+Lsp::Crystal.run

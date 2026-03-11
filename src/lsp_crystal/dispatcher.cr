@@ -57,6 +57,7 @@ module Lsp::Crystal
       # Document Highlight, Folding Range
       @handlers["textDocument/documentHighlight"] = Handler.new { |server, msg| Handlers::DocumentHighlight.handle(server, msg) }
       @handlers["textDocument/foldingRange"] = Handler.new { |server, msg| Handlers::FoldingRange.handle(server, msg) }
+      @handlers["textDocument/selectionRange"] = Handler.new { |server, msg| Handlers::SelectionRange.handle(server, msg) }
     end
   end
 end

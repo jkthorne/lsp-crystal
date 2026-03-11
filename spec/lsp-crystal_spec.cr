@@ -805,6 +805,33 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Providers::SelectionRange" do
+    it "builds nested selection ranges" do
+      code = "class Foo\n  def bar\n    hello\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      positions = [Lsp::Crystal::Position.new(line: 2, character: 4)]
+      results = Lsp::Crystal::Providers::SelectionRange.run(doc, positions)
+      results.size.should eq(1)
+
+      sel = results[0]
+      sel.range.start.character.should eq(4)
+      sel.range.end_pos.character.should eq(9)
+
+      sel.parent.should_not be_nil
+    end
+
+    it "handles multiple positions" do
+      code = "class Foo\n  def bar\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      positions = [
+        Lsp::Crystal::Position.new(line: 0, character: 6),
+        Lsp::Crystal::Position.new(line: 1, character: 6),
+      ]
+      results = Lsp::Crystal::Providers::SelectionRange.run(doc, positions)
+      results.size.should eq(2)
+    end
+  end
+
   describe "FoldingRange handler integration" do
     it "returns folding ranges via textDocument/foldingRange" do
       client = TestClient.new
@@ -823,6 +850,30 @@ describe Lsp::Crystal do
       resp["id"].should eq(70)
       ranges = resp["result"].as_a
       ranges.size.should eq(2)
+      client.close
+    end
+  end
+
+  describe "SelectionRange handler integration" do
+    it "returns selection ranges via textDocument/selectionRange" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/sel.cr", languageId: "crystal", version: 1, text: "class Foo\n  def bar\n    hello\n  end\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(80, "textDocument/selectionRange", {
+        textDocument: {uri: "file:///tmp/sel.cr"},
+        positions:    [{line: 2, character: 4}],
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(80)
+      results = resp["result"].as_a
+      results.size.should eq(1)
+      results[0]["range"]["start"]["character"].should eq(4)
       client.close
     end
   end

@@ -1031,4 +1031,81 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  describe "Providers::Rename" do
+    it "prepares rename at a valid symbol" do
+      code = "foo = 42\nputs foo\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::Rename.prepare(doc, 0, 1)
+      result.should_not be_nil
+      range, placeholder = result.not_nil!
+      placeholder.should eq("foo")
+      range.start.character.should eq(0)
+      range.end_pos.character.should eq(3)
+    end
+
+    it "returns nil for prepare on whitespace" do
+      code = "x = 1\n   \ny = 2\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::Rename.prepare(doc, 1, 1)
+      result.should be_nil
+    end
+
+    it "renames all occurrences in a document" do
+      code = "foo = 42\nputs foo\nfoo + 1\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      edit = Lsp::Crystal::Providers::Rename.run(doc, 0, 1, "bar", nil)
+      edits = edit.changes["file:///t.cr"]
+      edits.size.should eq(3)
+      edits.all? { |e| e.new_text == "bar" }.should be_true
+    end
+  end
+
+  describe "Rename handler integration" do
+    it "returns workspace edit via textDocument/rename" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/ren.cr", languageId: "crystal", version: 1, text: "foo = 1\nputs foo\n"},
+      })
+      Fiber.yield
+
+      client.send_request(92, "textDocument/rename", {
+        textDocument: {uri: "file:///tmp/ren.cr"},
+        position:     {line: 0, character: 0},
+        newName:      "bar",
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(92)
+      changes = resp["result"]["changes"]
+      edits = changes["file:///tmp/ren.cr"].as_a
+      edits.size.should eq(2)
+      edits.all? { |e| e["newText"].as_s == "bar" }.should be_true
+      client.close
+    end
+
+    it "returns prepare rename via textDocument/prepareRename" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/prep.cr", languageId: "crystal", version: 1, text: "hello = 1\n"},
+      })
+      Fiber.yield
+
+      client.send_request(93, "textDocument/prepareRename", {
+        textDocument: {uri: "file:///tmp/prep.cr"},
+        position:     {line: 0, character: 2},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(93)
+      resp["result"]["placeholder"].as_s.should eq("hello")
+      resp["result"]["range"]["start"]["character"].should eq(0)
+      resp["result"]["range"]["end"]["character"].should eq(5)
+      client.close
+    end
+  end
 end

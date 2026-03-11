@@ -43,7 +43,7 @@ The binary will be at `bin/lsp-crystal`.
 
 The server communicates over stdin/stdout using the LSP protocol with JSON-RPC 2.0 and Content-Length framing.
 
-### Neovim (nvim-lspconfig)
+### Neovim
 
 ```lua
 vim.lsp.start({

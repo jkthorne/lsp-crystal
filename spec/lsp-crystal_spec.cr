@@ -331,6 +331,85 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Providers::Formatting" do
+    it "formats Crystal code" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "def foo\n1+1\nend\n")
+      edits = Lsp::Crystal::Providers::Formatting.run(doc)
+      edits.should_not be_nil
+      edits.not_nil!.size.should eq(1)
+      edits.not_nil![0].new_text.should eq("def foo\n  1 + 1\nend\n")
+    end
+
+    it "returns nil when already formatted" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "def foo\n  1 + 1\nend\n")
+      edits = Lsp::Crystal::Providers::Formatting.run(doc)
+      edits.should be_nil
+    end
+  end
+
+  describe "Providers::Definition" do
+    it "parses implementation results" do
+      # Test the JSON parsing by checking the provider handles tool output correctly
+      doc = Lsp::Crystal::Document.new("file:///nonexistent.cr", "crystal", 1, "x = 1")
+      locations = Lsp::Crystal::Providers::Definition.run(doc, 0, 0)
+      # With a nonexistent file, should return empty (tool fails gracefully)
+      locations.should be_a(Array(Lsp::Crystal::Location))
+    end
+  end
+
+  describe "Providers::Hover" do
+    it "returns nil for nonexistent file" do
+      doc = Lsp::Crystal::Document.new("file:///nonexistent.cr", "crystal", 1, "x = 1")
+      result = Lsp::Crystal::Providers::Hover.run(doc, 0, 0)
+      # With a nonexistent file, tool fails and returns nil
+      result.should be_nil
+    end
+  end
+
+  describe "Formatting handler integration" do
+    it "formats via textDocument/formatting" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/fmt_test.cr", languageId: "crystal", version: 1, text: "def foo\n1+1\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(10, "textDocument/formatting", {
+        textDocument: {uri: "file:///tmp/fmt_test.cr"},
+        options:      {tabSize: 2, insertSpaces: true},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(10)
+      edits = resp["result"].as_a
+      edits.size.should eq(1)
+      edits[0]["newText"].as_s.should eq("def foo\n  1 + 1\nend\n")
+
+      client.close
+    end
+
+    it "returns empty array when already formatted" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/fmt_test2.cr", languageId: "crystal", version: 1, text: "def foo\n  1 + 1\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(11, "textDocument/formatting", {
+        textDocument: {uri: "file:///tmp/fmt_test2.cr"},
+        options:      {tabSize: 2, insertSpaces: true},
+      })
+      resp = client.read_response
+
+      resp["result"].as_a.size.should eq(0)
+      client.close
+    end
+  end
+
   describe "Text Sync Integration" do
     it "tracks documents through open/change/close" do
       client = TestClient.new

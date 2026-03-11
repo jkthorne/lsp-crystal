@@ -40,6 +40,11 @@ module Lsp::Crystal
       @handlers["textDocument/didChange"] = Handler.new { |server, msg| Handlers::TextSync.did_change(server, msg) }
       @handlers["textDocument/didSave"] = Handler.new { |server, msg| Handlers::TextSync.did_save(server, msg) }
       @handlers["textDocument/didClose"] = Handler.new { |server, msg| Handlers::TextSync.did_close(server, msg) }
+
+      # Phase 4-6: Formatting, Definition, Hover
+      @handlers["textDocument/formatting"] = Handler.new { |server, msg| Handlers::Formatting.handle(server, msg) }
+      @handlers["textDocument/definition"] = Handler.new { |server, msg| Handlers::Definition.handle(server, msg) }
+      @handlers["textDocument/hover"] = Handler.new { |server, msg| Handlers::Hover.handle(server, msg) }
     end
   end
 end

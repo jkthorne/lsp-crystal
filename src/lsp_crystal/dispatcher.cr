@@ -45,6 +45,11 @@ module Lsp::Crystal
       @handlers["textDocument/formatting"] = Handler.new { |server, msg| Handlers::Formatting.handle(server, msg) }
       @handlers["textDocument/definition"] = Handler.new { |server, msg| Handlers::Definition.handle(server, msg) }
       @handlers["textDocument/hover"] = Handler.new { |server, msg| Handlers::Hover.handle(server, msg) }
+
+      # Phase 7-9: Completion, Document Symbols, Signature Help
+      @handlers["textDocument/completion"] = Handler.new { |server, msg| Handlers::Completion.handle(server, msg) }
+      @handlers["textDocument/documentSymbol"] = Handler.new { |server, msg| Handlers::DocumentSymbol.handle(server, msg) }
+      @handlers["textDocument/signatureHelp"] = Handler.new { |server, msg| Handlers::SignatureHelp.handle(server, msg) }
     end
   end
 end

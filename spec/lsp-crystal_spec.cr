@@ -410,6 +410,212 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Providers::Completion" do
+    it "returns keyword completions" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "de")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 2)
+      labels = result.items.map(&.label)
+      labels.should contain("def")
+    end
+
+    it "returns snippet completions" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "cl")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 2)
+      labels = result.items.map(&.label)
+      labels.should contain("class")
+      snippet = result.items.find { |i| i.label == "class" && i.insert_text_format == 2 }
+      snippet.should_not be_nil
+    end
+
+    it "returns document symbol completions" do
+      code = "def greet\nend\ndef goodbye\nend\ngr"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::Completion.run(doc, 4, 2)
+      labels = result.items.map(&.label)
+      labels.should contain("greet")
+      labels.should_not contain("goodbye")
+    end
+
+    it "returns empty for empty prefix" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 0)
+      result.items.size.should eq(0)
+    end
+
+    it "filters keywords by prefix" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "re")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 2)
+      labels = result.items.map(&.label)
+      labels.should contain("require")
+      labels.should contain("return")
+      labels.should contain("rescue")
+      labels.should_not contain("def")
+    end
+  end
+
+  describe "Providers::DocumentSymbol" do
+    it "extracts class, method, module symbols" do
+      code = <<-CR
+      module MyApp
+        class User
+          property name : String
+          ROLE = "admin"
+
+          def initialize(@name)
+          end
+
+          def greet
+          end
+        end
+      end
+      CR
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      names = symbols.map(&.name)
+      names.should contain("MyApp")
+      names.should contain("User")
+      names.should contain("name")
+      names.should contain("ROLE")
+      names.should contain("initialize")
+      names.should contain("greet")
+    end
+
+    it "extracts struct, enum, macro" do
+      code = <<-CR
+      struct Point
+        def x; end
+      end
+      enum Color
+      end
+      macro my_macro
+      end
+      CR
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      names = symbols.map(&.name)
+      names.should contain("Point")
+      names.should contain("Color")
+      names.should contain("my_macro")
+    end
+
+    it "handles self. methods" do
+      code = "def self.build\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      symbols.any? { |s| s.name == "self.build" }.should be_true
+    end
+
+    it "returns empty for empty document" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "")
+      Lsp::Crystal::Providers::DocumentSymbol.run(doc).size.should eq(0)
+    end
+  end
+
+  describe "Providers::SignatureHelp" do
+    it "finds signature for method call" do
+      code = "def greet(name : String, age : Int32)\nend\ngreet("
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::SignatureHelp.run(doc, 2, 6)
+      result.should_not be_nil
+      result.not_nil!.signatures.size.should eq(1)
+      result.not_nil!.signatures[0].parameters.size.should eq(2)
+      result.not_nil!.active_parameter.should eq(0)
+    end
+
+    it "tracks active parameter after comma" do
+      code = "def foo(a, b, c)\nend\nfoo(1, "
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::SignatureHelp.run(doc, 2, 7)
+      result.should_not be_nil
+      result.not_nil!.active_parameter.should eq(1)
+    end
+
+    it "returns nil when not in a call" do
+      code = "x = 1\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::SignatureHelp.run(doc, 0, 5)
+      result.should be_nil
+    end
+
+    it "returns nil when method not found in document" do
+      code = "unknown_method("
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::SignatureHelp.run(doc, 0, 15)
+      result.should be_nil
+    end
+  end
+
+  describe "Completion handler integration" do
+    it "returns completions via textDocument/completion" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/comp.cr", languageId: "crystal", version: 1, text: "de"},
+      })
+      Fiber.yield
+
+      client.send_request(20, "textDocument/completion", {
+        textDocument: {uri: "file:///tmp/comp.cr"},
+        position:     {line: 0, character: 2},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(20)
+      items = resp["result"]["items"].as_a
+      items.any? { |i| i["label"].as_s == "def" }.should be_true
+      client.close
+    end
+  end
+
+  describe "DocumentSymbol handler integration" do
+    it "returns symbols via textDocument/documentSymbol" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/sym.cr", languageId: "crystal", version: 1, text: "class Foo\n  def bar\n  end\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(30, "textDocument/documentSymbol", {
+        textDocument: {uri: "file:///tmp/sym.cr"},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(30)
+      symbols = resp["result"].as_a
+      symbols.any? { |s| s["name"].as_s == "Foo" }.should be_true
+      symbols.any? { |s| s["name"].as_s == "bar" }.should be_true
+      client.close
+    end
+  end
+
+  describe "SignatureHelp handler integration" do
+    it "returns signature help via textDocument/signatureHelp" do
+      client = TestClient.new
+      client.initialize_server
+
+      code = "def greet(name : String)\nend\ngreet("
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/sig.cr", languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(40, "textDocument/signatureHelp", {
+        textDocument: {uri: "file:///tmp/sig.cr"},
+        position:     {line: 2, character: 6},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(40)
+      sigs = resp["result"]["signatures"].as_a
+      sigs.size.should eq(1)
+      sigs[0]["label"].as_s.should contain("greet")
+      client.close
+    end
+  end
+
   describe "Text Sync Integration" do
     it "tracks documents through open/change/close" do
       client = TestClient.new

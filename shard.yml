@@ -1,0 +1,13 @@
+name: lsp-crystal
+version: 0.1.0
+
+authors:
+  - Jack Thorne <jack@myrenee.io>
+
+targets:
+  lsp-crystal:
+    main: src/lsp-crystal.cr
+
+crystal: '>= 1.19.1'
+
+license: MIT

@@ -1,0 +1,92 @@
+module Lsp::Crystal::Providers
+  module DocumentHighlight
+    # DocumentHighlightKind
+    TEXT  = 1
+    READ  = 2
+    WRITE = 3
+
+    struct HighlightInfo
+      include JSON::Serializable
+
+      property range : Range
+      property kind : Int32
+
+      def initialize(@range, @kind)
+      end
+    end
+
+    # Find all occurrences of the word at the given position
+    def self.run(document : Document, line : Int32, character : Int32) : Array(HighlightInfo)
+      word = extract_word(document, line, character)
+      return [] of HighlightInfo if word.empty?
+
+      results = [] of HighlightInfo
+      # Build a regex that matches the word with word boundaries
+      pattern = /\b#{Regex.escape(word)}\b/
+
+      document.content.each_line.with_index do |text, line_num|
+        offset = 0
+        while match = pattern.match(text, offset)
+          col = match.begin
+          break unless col
+
+          kind = classify_occurrence(text, col, word)
+          results << HighlightInfo.new(
+            range: Range.new(
+              start: Position.new(line: line_num, character: col),
+              end_pos: Position.new(line: line_num, character: col + word.size)
+            ),
+            kind: kind
+          )
+          offset = col + word.size
+        end
+      end
+
+      results
+    end
+
+    private def self.extract_word(document : Document, line : Int32, character : Int32) : String
+      text = document.line_at(line)
+      return "" unless text
+
+      # Walk backward to find word start
+      start_pos = character
+      while start_pos > 0 && word_char?(text[start_pos - 1]?)
+        start_pos -= 1
+      end
+
+      # Walk forward to find word end
+      end_pos = character
+      while end_pos < text.size && word_char?(text[end_pos]?)
+        end_pos += 1
+      end
+
+      return "" if start_pos == end_pos
+      text[start_pos...end_pos]
+    end
+
+    private def self.word_char?(char : Char?) : Bool
+      return false unless char
+      char.alphanumeric? || char == '_' || char == '?' || char == '!'
+    end
+
+    # Classify whether this occurrence is a read or write
+    private def self.classify_occurrence(line : String, col : Int32, word : String) : Int32
+      stripped = line.strip
+      # Assignment patterns: word = ..., word +=, word ||=, etc.
+      after_word = line[col + word.size..]?.try(&.lstrip) || ""
+      if after_word.starts_with?("=") && !after_word.starts_with?("==")
+        return WRITE
+      end
+      # Variable declaration via property/getter/setter
+      if stripped =~ /^\s*(?:property|getter|setter)[?!]?\s+#{Regex.escape(word)}\b/
+        return WRITE
+      end
+      # Parameter in method def
+      if stripped =~ /^\s*def\s/
+        return WRITE
+      end
+      READ
+    end
+  end
+end

@@ -53,6 +53,9 @@ module Lsp::Crystal
 
       # Phase 10: Workspace Symbols
       @handlers["workspace/symbol"] = Handler.new { |server, msg| Handlers::WorkspaceSymbol.handle(server, msg) }
+
+      # Document Highlight
+      @handlers["textDocument/documentHighlight"] = Handler.new { |server, msg| Handlers::DocumentHighlight.handle(server, msg) }
     end
   end
 end

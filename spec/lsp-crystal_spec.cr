@@ -719,6 +719,56 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Providers::DocumentHighlight" do
+    it "highlights all occurrences of a word" do
+      code = "foo = 1\nputs foo\nfoo + 2"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      highlights = Lsp::Crystal::Providers::DocumentHighlight.run(doc, 0, 0)
+      highlights.size.should eq(3)
+      highlights[0].kind.should eq(Lsp::Crystal::Providers::DocumentHighlight::WRITE)
+      highlights[0].range.start.line.should eq(0)
+      highlights[1].kind.should eq(Lsp::Crystal::Providers::DocumentHighlight::READ)
+      highlights[2].kind.should eq(Lsp::Crystal::Providers::DocumentHighlight::READ)
+    end
+
+    it "returns empty for whitespace/empty position" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "  ")
+      highlights = Lsp::Crystal::Providers::DocumentHighlight.run(doc, 0, 0)
+      highlights.size.should eq(0)
+    end
+
+    it "does not match partial words" do
+      code = "foobar = 1\nfoo = 2"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      highlights = Lsp::Crystal::Providers::DocumentHighlight.run(doc, 1, 0)
+      highlights.size.should eq(1)
+      highlights[0].range.start.line.should eq(1)
+    end
+  end
+
+  describe "DocumentHighlight handler integration" do
+    it "returns highlights via textDocument/documentHighlight" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/hl.cr", languageId: "crystal", version: 1, text: "foo = 1\nputs foo\n"},
+      })
+      Fiber.yield
+
+      client.send_request(60, "textDocument/documentHighlight", {
+        textDocument: {uri: "file:///tmp/hl.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(60)
+      highlights = resp["result"].as_a
+      highlights.size.should eq(2)
+      client.close
+    end
+  end
+
   describe "Text Sync Integration" do
     it "tracks documents through open/change/close" do
       client = TestClient.new

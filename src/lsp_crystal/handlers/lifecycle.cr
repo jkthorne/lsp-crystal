@@ -29,7 +29,8 @@ module Lsp::Crystal::Handlers
           signatureHelpProvider:      {
             triggerCharacters: ["(", ","],
           },
-          workspaceSymbolProvider: true,
+          workspaceSymbolProvider:    true,
+          documentHighlightProvider: true,
         },
         serverInfo: {
           name:    "crystal-lsp",

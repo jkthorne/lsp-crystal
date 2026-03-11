@@ -454,42 +454,68 @@ describe Lsp::Crystal do
   end
 
   describe "Providers::DocumentSymbol" do
-    it "extracts class, method, module symbols" do
-      code = <<-CR
-      module MyApp
-        class User
-          property name : String
-          ROLE = "admin"
-
-          def initialize(@name)
-          end
-
-          def greet
-          end
-        end
-      end
-      CR
+    it "extracts class, method, module symbols hierarchically" do
+      code = "module MyApp\n  class User\n    property name : String\n    ROLE = \"admin\"\n\n    def initialize(@name)\n    end\n\n    def greet\n    end\n  end\nend\n"
       doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
       symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
-      names = symbols.map(&.name)
-      names.should contain("MyApp")
-      names.should contain("User")
-      names.should contain("name")
-      names.should contain("ROLE")
-      names.should contain("initialize")
-      names.should contain("greet")
+      # Top level: only MyApp
+      symbols.size.should eq(1)
+      my_app = symbols[0]
+      my_app.name.should eq("MyApp")
+      # MyApp contains User
+      my_app.children.size.should eq(1)
+      user = my_app.children[0]
+      user.name.should eq("User")
+      # User contains name, ROLE, initialize, greet
+      child_names = user.children.map(&.name)
+      child_names.should contain("name")
+      child_names.should contain("ROLE")
+      child_names.should contain("initialize")
+      child_names.should contain("greet")
+    end
+
+    it "nests methods inside class" do
+      code = "class Foo\n  def bar\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("Foo")
+      symbols[0].children.size.should eq(1)
+      symbols[0].children[0].name.should eq("bar")
+    end
+
+    it "handles multiple nesting levels" do
+      code = "module Outer\n  module Inner\n    class Deep\n      def method\n      end\n    end\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("Outer")
+      symbols[0].children[0].name.should eq("Inner")
+      symbols[0].children[0].children[0].name.should eq("Deep")
+      symbols[0].children[0].children[0].children[0].name.should eq("method")
+    end
+
+    it "keeps top-level defs at root" do
+      code = "def standalone\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("standalone")
+      symbols[0].children.size.should eq(0)
+    end
+
+    it "serializes children field in JSON" do
+      code = "class Foo\n  def bar\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      json = symbols.to_json
+      parsed = JSON.parse(json)
+      parsed[0]["children"].as_a.size.should eq(1)
+      parsed[0]["children"][0]["name"].should eq("bar")
     end
 
     it "extracts struct, enum, macro" do
-      code = <<-CR
-      struct Point
-        def x; end
-      end
-      enum Color
-      end
-      macro my_macro
-      end
-      CR
+      code = "struct Point\n  def x\n  end\nend\nenum Color\nend\nmacro my_macro\nend\n"
       doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
       symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
       names = symbols.map(&.name)
@@ -508,6 +534,14 @@ describe Lsp::Crystal do
     it "returns empty for empty document" do
       doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "")
       Lsp::Crystal::Providers::DocumentSymbol.run(doc).size.should eq(0)
+    end
+
+    it "run_flat returns flat list for workspace use" do
+      code = "class Foo\n  def bar\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      flat = Lsp::Crystal::Providers::DocumentSymbol.run_flat(doc)
+      flat.size.should eq(2)
+      flat.map(&.name).should eq(["Foo", "bar"])
     end
   end
 
@@ -569,7 +603,7 @@ describe Lsp::Crystal do
   end
 
   describe "DocumentSymbol handler integration" do
-    it "returns symbols via textDocument/documentSymbol" do
+    it "returns hierarchical symbols via textDocument/documentSymbol" do
       client = TestClient.new
       client.initialize_server
 
@@ -585,9 +619,78 @@ describe Lsp::Crystal do
 
       resp["id"].should eq(30)
       symbols = resp["result"].as_a
-      symbols.any? { |s| s["name"].as_s == "Foo" }.should be_true
-      symbols.any? { |s| s["name"].as_s == "bar" }.should be_true
+      symbols.size.should eq(1)
+      symbols[0]["name"].as_s.should eq("Foo")
+      symbols[0]["children"].as_a.size.should eq(1)
+      symbols[0]["children"][0]["name"].as_s.should eq("bar")
       client.close
+    end
+  end
+
+  describe "Providers::WorkspaceSymbol" do
+    it "searches across files in workspace" do
+      dir = File.tempname("ws_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Alpha\n  def foo\n  end\nend\n")
+      File.write(File.join(dir, "b.cr"), "class Beta\n  def bar\n  end\nend\n")
+
+      results = Lsp::Crystal::Providers::WorkspaceSymbol.run(dir, "")
+      names = results.map(&.name)
+      names.should contain("Alpha")
+      names.should contain("Beta")
+      names.should contain("foo")
+      names.should contain("bar")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "filters by query string" do
+      dir = File.tempname("ws_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Alpha\nend\nclass Beta\nend\n")
+
+      results = Lsp::Crystal::Providers::WorkspaceSymbol.run(dir, "alpha")
+      results.size.should eq(1)
+      results[0].name.should eq("Alpha")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "returns empty for no match" do
+      dir = File.tempname("ws_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Foo\nend\n")
+
+      results = Lsp::Crystal::Providers::WorkspaceSymbol.run(dir, "zzzzz")
+      results.size.should eq(0)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
+
+  describe "WorkspaceSymbol handler integration" do
+    it "returns symbols via workspace/symbol" do
+      # Create temp workspace with a Crystal file
+      dir = File.tempname("ws_handler_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "main.cr"), "class MyClass\n  def my_method\n  end\nend\n")
+
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: Lsp::Crystal::URI.path_to_uri(dir), capabilities: {} of String => String})
+      client.read_response
+      client.send_notification("initialized")
+
+      client.send_request(50, "workspace/symbol", {query: "My"})
+      resp = client.read_response
+
+      resp["id"].should eq(50)
+      symbols = resp["result"].as_a
+      symbols.any? { |s| s["name"].as_s == "MyClass" }.should be_true
+      symbols.any? { |s| s["name"].as_s == "my_method" }.should be_true
+
+      client.close
+    ensure
+      FileUtils.rm_rf(dir) if dir
     end
   end
 

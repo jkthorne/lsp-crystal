@@ -33,6 +33,7 @@ module Lsp::Crystal::Handlers
           documentHighlightProvider: true,
           foldingRangeProvider:      true,
           selectionRangeProvider:    true,
+          implementationProvider:    true,
         },
         serverInfo: {
           name:    "crystal-lsp",

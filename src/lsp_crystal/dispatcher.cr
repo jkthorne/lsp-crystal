@@ -62,6 +62,7 @@ module Lsp::Crystal
 
       # Phase 12: References
       @handlers["textDocument/references"] = Handler.new { |server, msg| Handlers::References.handle(server, msg) }
+      @handlers["textDocument/codeAction"] = Handler.new { |server, msg| Handlers::CodeAction.handle(server, msg) }
     end
   end
 end

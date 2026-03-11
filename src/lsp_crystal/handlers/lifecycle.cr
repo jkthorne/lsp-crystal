@@ -35,6 +35,7 @@ module Lsp::Crystal::Handlers
           selectionRangeProvider:    true,
           implementationProvider:    true,
           referencesProvider:        true,
+          codeActionProvider:        true,
         },
         serverInfo: {
           name:    "crystal-lsp",

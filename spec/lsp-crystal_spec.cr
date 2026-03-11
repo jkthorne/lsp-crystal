@@ -967,4 +967,68 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  describe "Providers::CodeAction" do
+    it "suggests prefixing unused variable with underscore" do
+      code = "x = 1\nputs y\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      diagnostics = [JSON.parse({
+        message: "variable 'x' isn't used",
+        range:   {start: {line: 0, character: 0}, "end": {line: 0, character: 1}},
+      }.to_json)]
+
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 1)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, diagnostics)
+      actions.any? { |a| a.title.includes?("underscore") }.should be_true
+    end
+
+    it "suggests organizing unsorted requires" do
+      code = "require \"z\"\nrequire \"a\"\nrequire \"m\"\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 2, character: 0)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.any? { |a| a.title == "Organize requires" }.should be_true
+    end
+
+    it "returns empty when requires are already sorted" do
+      code = "require \"a\"\nrequire \"b\"\nrequire \"c\"\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 2, character: 0)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.any? { |a| a.title == "Organize requires" }.should be_false
+    end
+  end
+
+  describe "CodeAction handler integration" do
+    it "returns code actions via textDocument/codeAction" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/action.cr", languageId: "crystal", version: 1, text: "require \"z\"\nrequire \"a\"\n"},
+      })
+      Fiber.yield
+
+      client.send_request(91, "textDocument/codeAction", {
+        textDocument: {uri: "file:///tmp/action.cr"},
+        range:        {start: {line: 0, character: 0}, "end": {line: 1, character: 0}},
+        context:      {diagnostics: [] of String},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(91)
+      actions = resp["result"].as_a
+      actions.any? { |a| a["title"].as_s == "Organize requires" }.should be_true
+      client.close
+    end
+  end
 end

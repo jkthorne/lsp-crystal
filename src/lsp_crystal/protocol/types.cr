@@ -72,4 +72,24 @@ module Lsp::Crystal
     def initialize(@include_declaration = true)
     end
   end
+
+  struct WorkspaceEdit
+    include JSON::Serializable
+
+    property changes : Hash(String, Array(TextEdit))
+
+    def initialize(@changes = Hash(String, Array(TextEdit)).new)
+    end
+  end
+
+  struct CodeAction
+    include JSON::Serializable
+
+    property title : String
+    property kind : String?
+    property edit : WorkspaceEdit?
+
+    def initialize(@title, @kind = nil, @edit = nil)
+    end
+  end
 end

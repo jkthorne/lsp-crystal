@@ -34,6 +34,7 @@ module Lsp::Crystal::Handlers
           foldingRangeProvider:      true,
           selectionRangeProvider:    true,
           implementationProvider:    true,
+          referencesProvider:        true,
         },
         serverInfo: {
           name:    "crystal-lsp",

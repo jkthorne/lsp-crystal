@@ -59,6 +59,9 @@ module Lsp::Crystal
       @handlers["textDocument/foldingRange"] = Handler.new { |server, msg| Handlers::FoldingRange.handle(server, msg) }
       @handlers["textDocument/selectionRange"] = Handler.new { |server, msg| Handlers::SelectionRange.handle(server, msg) }
       @handlers["textDocument/implementation"] = Handler.new { |server, msg| Handlers::Implementation.handle(server, msg) }
+
+      # Phase 12: References
+      @handlers["textDocument/references"] = Handler.new { |server, msg| Handlers::References.handle(server, msg) }
     end
   end
 end

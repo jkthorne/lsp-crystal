@@ -919,4 +919,52 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  describe "Providers::References" do
+    it "finds all references of a word in a single document" do
+      code = "def greet(name)\n  puts name\n  name.upcase\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      refs = Lsp::Crystal::Providers::References.run(doc, 0, 10, nil)
+      refs.size.should eq(3)
+      refs.all? { |r| r.uri == "file:///t.cr" }.should be_true
+    end
+
+    it "returns empty for cursor on whitespace" do
+      code = "x = 1\n  \ny = 2\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      refs = Lsp::Crystal::Providers::References.run(doc, 1, 0, nil)
+      refs.should be_empty
+    end
+
+    it "finds references with word boundaries" do
+      code = "foo = 1\nfoobar = 2\nfoo + foobar\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      refs = Lsp::Crystal::Providers::References.run(doc, 0, 0, nil)
+      refs.size.should eq(2)
+    end
+  end
+
+  describe "References handler integration" do
+    it "returns references via textDocument/references" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/ref.cr", languageId: "crystal", version: 1, text: "xzqrefvar99 = 1\nputs xzqrefvar99\nxzqrefvar99 + 2\n"},
+      })
+      Fiber.yield
+
+      client.send_request(90, "textDocument/references", {
+        textDocument: {uri: "file:///tmp/ref.cr"},
+        position:     {line: 0, character: 0},
+        context:      {includeDeclaration: true},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(90)
+      refs = resp["result"].as_a
+      refs.size.should eq(3)
+      client.close
+    end
+  end
 end

@@ -62,4 +62,14 @@ module Lsp::Crystal
     def initialize(@kind, @value)
     end
   end
+
+  struct ReferenceContext
+    include JSON::Serializable
+
+    @[JSON::Field(key: "includeDeclaration")]
+    property include_declaration : Bool
+
+    def initialize(@include_declaration = true)
+    end
+  end
 end

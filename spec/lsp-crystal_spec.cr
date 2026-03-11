@@ -746,6 +746,42 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Providers::FoldingRange" do
+    it "folds block keywords" do
+      code = "class Foo\n  def bar\n    1\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      ranges = Lsp::Crystal::Providers::FoldingRange.run(doc)
+      ranges.size.should eq(2)
+      ranges.all? { |r| r.kind == "region" }.should be_true
+    end
+
+    it "folds consecutive comments" do
+      code = "# line 1\n# line 2\n# line 3\nx = 1\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      ranges = Lsp::Crystal::Providers::FoldingRange.run(doc)
+      comment_ranges = ranges.select { |r| r.kind == "comment" }
+      comment_ranges.size.should eq(1)
+      comment_ranges[0].start_line.should eq(0)
+      comment_ranges[0].end_line.should eq(2)
+    end
+
+    it "folds consecutive requires" do
+      code = "require \"json\"\nrequire \"yaml\"\nrequire \"log\"\n\nclass Foo\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      ranges = Lsp::Crystal::Providers::FoldingRange.run(doc)
+      import_ranges = ranges.select { |r| r.kind == "imports" }
+      import_ranges.size.should eq(1)
+      import_ranges[0].start_line.should eq(0)
+      import_ranges[0].end_line.should eq(2)
+    end
+
+    it "returns empty for flat code" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "x = 1\n")
+      ranges = Lsp::Crystal::Providers::FoldingRange.run(doc)
+      ranges.size.should eq(0)
+    end
+  end
+
   describe "DocumentHighlight handler integration" do
     it "returns highlights via textDocument/documentHighlight" do
       client = TestClient.new
@@ -765,6 +801,28 @@ describe Lsp::Crystal do
       resp["id"].should eq(60)
       highlights = resp["result"].as_a
       highlights.size.should eq(2)
+      client.close
+    end
+  end
+
+  describe "FoldingRange handler integration" do
+    it "returns folding ranges via textDocument/foldingRange" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/fold.cr", languageId: "crystal", version: 1, text: "class Foo\n  def bar\n    1\n  end\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(70, "textDocument/foldingRange", {
+        textDocument: {uri: "file:///tmp/fold.cr"},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(70)
+      ranges = resp["result"].as_a
+      ranges.size.should eq(2)
       client.close
     end
   end

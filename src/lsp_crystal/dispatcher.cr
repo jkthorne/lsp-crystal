@@ -54,8 +54,9 @@ module Lsp::Crystal
       # Phase 10: Workspace Symbols
       @handlers["workspace/symbol"] = Handler.new { |server, msg| Handlers::WorkspaceSymbol.handle(server, msg) }
 
-      # Document Highlight
+      # Document Highlight, Folding Range
       @handlers["textDocument/documentHighlight"] = Handler.new { |server, msg| Handlers::DocumentHighlight.handle(server, msg) }
+      @handlers["textDocument/foldingRange"] = Handler.new { |server, msg| Handlers::FoldingRange.handle(server, msg) }
     end
   end
 end

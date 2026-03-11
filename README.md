@@ -73,12 +73,26 @@ shards build --release
 ## Architecture
 
 ```
-stdin/stdout <-> Transport (JSON-RPC 2.0) <-> Dispatcher <-> Handlers <-> Providers <-> Crystal Tools
+stdin/stdout
+  |
+Transport::Stdio (Content-Length framing)
+  |
+Server (main loop, project detection, diagnostics worker)
+  |
+Dispatcher (routes JSON-RPC methods to handlers)
+  |
+Handlers (extract params, call provider, format response)
+  |
+Providers (business logic)
+  |
+CrystalTool          DocumentStore
+(spawns crystal)      (in-memory docs)
 ```
 
 Key design decisions:
+- Zero external dependencies — Crystal stdlib only
 - All LSP types use `JSON::Serializable` with camelCase field mapping
-- Main fiber reads stdin synchronously; diagnostics run in spawned fibers
+- Main fiber reads stdin synchronously; diagnostics run in spawned fibers with 500ms debounce
 - Unsaved files use stdin for formatting, temp files for diagnostics
 - Project root detected via `shard.yml` targets
 

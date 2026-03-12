@@ -27,10 +27,22 @@ module Lsp::Crystal::Handlers
       doc = server.document_store.update(uri, version, changes)
       Log.debug { "Changed: #{uri} (v#{version})" }
 
+      # Invalidate AST cache
+      server.ast_cache.invalidate(uri)
+
       # Update workspace index with latest content
       if doc
         server.workspace_index.invalidate_content(doc.path, doc.content)
+
+        # Tier 1: Instant syntax diagnostics (ms) — published immediately
+        syntax_diags = Providers::Diagnostics.check_syntax(doc.content, doc.path)
+        server.send_notification("textDocument/publishDiagnostics", {
+          uri:         uri,
+          diagnostics: syntax_diags,
+        })
       end
+
+      # Tier 2: Full diagnostics via crystal build (debounced)
       server.schedule_diagnostics(uri)
       nil
     end
@@ -60,6 +72,7 @@ module Lsp::Crystal::Handlers
       params = message.params.not_nil!
       uri = params["textDocument"]["uri"].as_s
       server.document_store.close(uri)
+      server.ast_cache.invalidate(uri)
       Log.debug { "Closed: #{uri}" }
 
       # Re-index from disk when document is closed

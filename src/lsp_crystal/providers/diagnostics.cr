@@ -28,6 +28,28 @@ module Lsp::Crystal::Providers
       Hint        = 4
     end
 
+    # Tier 1: Fast syntax-only check using Crystal::Parser (instant, ms)
+    def self.check_syntax(content : String, filename : String = "") : Array(Diagnostic)
+      result = AST.parse(content, filename)
+      if error = result.error
+        line_num = Math.max(0, (error.line_number || 1) - 1)
+        col = Math.max(0, (error.column_number || 1) - 1)
+        [Diagnostic.new(
+          range: Range.new(
+            start: Position.new(line: line_num, character: col),
+            end_pos: Position.new(line: line_num, character: col)
+          ),
+          severity: Severity::Error.value,
+          source: "crystal-syntax",
+          message: error.message || "Syntax error"
+        )]
+      else
+        [] of Diagnostic
+      end
+    rescue
+      [] of Diagnostic
+    end
+
     def self.run(file_path : String) : Array(Diagnostic)
       result = CrystalTool.check(file_path)
       return [] of Diagnostic if result.success

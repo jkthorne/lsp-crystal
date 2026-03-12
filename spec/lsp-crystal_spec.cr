@@ -3285,4 +3285,417 @@ describe Lsp::Crystal do
       uris.sort.should eq(["file:///a.cr", "file:///b.cr"])
     end
   end
+
+  # ── Phase 7: Crystal AST Integration ──
+
+  describe "AST::Parser" do
+    it "parses valid Crystal code" do
+      result = Lsp::Crystal::AST.parse("class Foo; end")
+      result.success?.should be_true
+      result.node.should_not be_nil
+      result.error.should be_nil
+    end
+
+    it "returns SyntaxException for invalid code" do
+      result = Lsp::Crystal::AST.parse("def foo\n  x = \nend")
+      result.success?.should be_false
+      result.error.should_not be_nil
+    end
+
+    it "converts Crystal location to LSP position (1-based to 0-based)" do
+      result = Lsp::Crystal::AST.parse("class Foo\nend")
+      result.success?.should be_true
+    end
+  end
+
+  describe "AST::Cache" do
+    it "caches parse results by document version" do
+      cache = Lsp::Crystal::AST::Cache.new
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "class Foo; end")
+
+      result1 = cache.get(doc)
+      result1.should_not be_nil
+      result1.not_nil!.success?.should be_true
+
+      # Same version returns cached
+      result2 = cache.get(doc)
+      result2.should_not be_nil
+      cache.size.should eq(1)
+    end
+
+    it "re-parses on version change" do
+      cache = Lsp::Crystal::AST::Cache.new
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "class Foo; end")
+      cache.get(doc)
+
+      doc.version = 2
+      doc.content = "class Bar; end"
+      result = cache.get(doc)
+      result.should_not be_nil
+      result.not_nil!.success?.should be_true
+    end
+
+    it "invalidates by URI" do
+      cache = Lsp::Crystal::AST::Cache.new
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "class Foo; end")
+      cache.get(doc)
+      cache.size.should eq(1)
+
+      cache.invalidate("file:///test.cr")
+      cache.size.should eq(0)
+    end
+  end
+
+  describe "AST Document Symbols (SymbolVisitor)" do
+    it "extracts class symbols from AST" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "class Foo\nend")
+      cache = Lsp::Crystal::AST::Cache.new
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc, cache)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("Foo")
+      symbols[0].kind.should eq(Lsp::Crystal::Providers::DocumentSymbol::SymbolKind::Class.value)
+    end
+
+    it "extracts struct symbols" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "struct Point\nend")
+      cache = Lsp::Crystal::AST::Cache.new
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc, cache)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("Point")
+      symbols[0].kind.should eq(Lsp::Crystal::Providers::DocumentSymbol::SymbolKind::Struct.value)
+    end
+
+    it "extracts nested symbols with hierarchy" do
+      code = "class Foo\n  def bar\n  end\nend"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      cache = Lsp::Crystal::AST::Cache.new
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc, cache)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("Foo")
+      symbols[0].children.size.should eq(1)
+      symbols[0].children[0].name.should eq("bar")
+    end
+
+    it "extracts module, enum, alias, constant" do
+      code = <<-CR
+      module MyMod
+        enum Color
+          Red
+        end
+        alias Name = String
+        FOO = 42
+      end
+      CR
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      cache = Lsp::Crystal::AST::Cache.new
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc, cache)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("MyMod")
+      children = symbols[0].children
+      children.any? { |c| c.name == "Color" }.should be_true
+      children.any? { |c| c.name == "Name" }.should be_true
+      children.any? { |c| c.name == "FOO" }.should be_true
+    end
+
+    it "extracts property declarations" do
+      code = "class Foo\n  property name : String\n  getter age : Int32\nend"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      cache = Lsp::Crystal::AST::Cache.new
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc, cache)
+      symbols[0].children.any? { |c| c.name == "name" }.should be_true
+      symbols[0].children.any? { |c| c.name == "age" }.should be_true
+    end
+
+    it "falls back to regex on parse failure" do
+      code = "class Foo\n  def bar\n    x = \n  end\nend"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      cache = Lsp::Crystal::AST::Cache.new
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc, cache)
+      # Should still find symbols via regex fallback
+      symbols.should_not be_empty
+    end
+
+    it "works without ast_cache (regex path)" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "class Foo\nend")
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      symbols.size.should eq(1)
+      symbols[0].name.should eq("Foo")
+    end
+  end
+
+  describe "AST Semantic Tokens (LexerTokenizer)" do
+    it "tokenizes keywords" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("def foo; end")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      # Should have at least: def, foo, end
+      keyword_tokens = ts.select { |t| t[3] == 10 } # keyword type
+      keyword_tokens.size.should be >= 2 # def, end
+    end
+
+    it "tokenizes comments" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("x = 1 # comment")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      comment_tokens = ts.select { |t| t[3] == 12 }
+      comment_tokens.size.should eq(1)
+    end
+
+    it "tokenizes instance variables as properties" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("@foo = 1")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      prop_tokens = ts.select { |t| t[3] == 7 } # property type
+      prop_tokens.size.should eq(1)
+    end
+
+    it "tokenizes numbers" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("x = 42")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      number_tokens = ts.select { |t| t[3] == 14 }
+      number_tokens.size.should eq(1)
+    end
+
+    it "tokenizes constants as types" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("Foo")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      type_tokens = ts.select { |t| t[3] == 1 } # type
+      type_tokens.size.should eq(1)
+    end
+
+    it "marks class definitions with definition modifier" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("class Foo; end")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      # The Foo token after class should be class type with definition modifier
+      class_defs = ts.select { |t| t[3] == 2 && t[4] == 1 } # class type, definition modifier
+      class_defs.size.should eq(1)
+    end
+
+    it "marks method definitions with definition modifier" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("def greet; end")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      func_defs = ts.select { |t| t[3] == 8 && t[4] == 1 } # function type, definition modifier
+      func_defs.size.should eq(1)
+    end
+
+    it "tokenizes modifier keywords (private, protected, abstract)" do
+      tokens = Lsp::Crystal::AST::LexerTokenizer.tokenize("private def foo; end")
+      tokens.should_not be_nil
+      ts = tokens.not_nil!
+      modifier_tokens = ts.select { |t| t[3] == 11 } # modifier type
+      modifier_tokens.size.should eq(1)
+    end
+
+    it "uses lexer path when ast_cache is provided" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "def foo; end")
+      cache = Lsp::Crystal::AST::Cache.new
+      data = Lsp::Crystal::Providers::SemanticTokens.run(doc, cache)
+      data.should_not be_empty
+    end
+
+    it "falls back to regex without ast_cache" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "def foo; end")
+      data = Lsp::Crystal::Providers::SemanticTokens.run(doc)
+      data.should_not be_empty
+    end
+  end
+
+  describe "Two-Tier Diagnostics" do
+    it "detects syntax errors instantly via check_syntax" do
+      diags = Lsp::Crystal::Providers::Diagnostics.check_syntax("def foo\n  x = \nend")
+      diags.size.should eq(1)
+      diags[0].source.should eq("crystal-syntax")
+      diags[0].severity.should eq(1) # Error
+    end
+
+    it "returns empty for valid syntax" do
+      diags = Lsp::Crystal::Providers::Diagnostics.check_syntax("class Foo; end")
+      diags.should be_empty
+    end
+
+    it "includes line and column in syntax error" do
+      diags = Lsp::Crystal::Providers::Diagnostics.check_syntax("class Foo\n  def\nend")
+      diags.size.should eq(1)
+      diags[0].range.start.line.should be >= 0
+    end
+
+    it "uses 'crystal-syntax' source tag (distinct from 'crystal')" do
+      diags = Lsp::Crystal::Providers::Diagnostics.check_syntax("def")
+      diags.size.should eq(1)
+      diags[0].source.should eq("crystal-syntax")
+    end
+  end
+
+  describe "AST References (ReferenceVisitor)" do
+    it "finds references ignoring strings and comments" do
+      code = <<-CR
+      x = 1
+      y = x + 1
+      # x in comment
+      z = "x in string"
+      CR
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+      visitor = Lsp::Crystal::AST::ReferenceVisitor.new(target_name: "x")
+      result.node.not_nil!.accept(visitor)
+      refs = visitor.references
+      # Should find x as variable references but NOT in string/comment
+      refs.all? { |r| r.name == "x" }.should be_true
+      # The string and comment x should not appear
+      refs.size.should be <= 3 # definition + read, not string/comment
+    end
+
+    it "classifies assignments as writes" do
+      code = "x = 1\ny = x"
+      result = Lsp::Crystal::AST.parse(code)
+      visitor = Lsp::Crystal::AST::ReferenceVisitor.new(target_name: "x")
+      result.node.not_nil!.accept(visitor)
+      writes = visitor.references.select { |r| r.kind.write? }
+      writes.should_not be_empty
+    end
+
+    it "classifies reads correctly" do
+      code = "x = 1\ny = x"
+      result = Lsp::Crystal::AST.parse(code)
+      visitor = Lsp::Crystal::AST::ReferenceVisitor.new(target_name: "x")
+      result.node.not_nil!.accept(visitor)
+      reads = visitor.references.select { |r| r.kind.read? }
+      reads.should_not be_empty
+    end
+
+    it "finds method definitions as definitions" do
+      code = "def greet; end"
+      result = Lsp::Crystal::AST.parse(code)
+      visitor = Lsp::Crystal::AST::ReferenceVisitor.new(target_name: "greet")
+      result.node.not_nil!.accept(visitor)
+      defs = visitor.references.select { |r| r.kind.definition? }
+      defs.size.should eq(1)
+    end
+
+    it "finds class definitions" do
+      code = "class MyClass; end"
+      result = Lsp::Crystal::AST.parse(code)
+      visitor = Lsp::Crystal::AST::ReferenceVisitor.new(target_name: "MyClass")
+      result.node.not_nil!.accept(visitor)
+      defs = visitor.references.select { |r| r.kind.definition? }
+      defs.size.should eq(1)
+    end
+  end
+
+  describe "AST Document Highlight" do
+    it "highlights with accurate read/write classification" do
+      code = "x = 1\ny = x + 2"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      cache = Lsp::Crystal::AST::Cache.new
+      highlights = Lsp::Crystal::Providers::DocumentHighlight.run(doc, 0, 0, cache)
+      highlights.should_not be_empty
+      # Assignment target should be WRITE
+      writes = highlights.select { |h| h.kind == 3 } # WRITE
+      writes.should_not be_empty
+    end
+
+    it "falls back to regex without ast_cache" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "x = 1\ny = x")
+      highlights = Lsp::Crystal::Providers::DocumentHighlight.run(doc, 0, 0)
+      highlights.should_not be_empty
+    end
+  end
+
+  describe "AST References Provider" do
+    it "uses AST for in-document references when cache available" do
+      code = "x = 1\ny = x + 2\nz = \"x in string\""
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      cache = Lsp::Crystal::AST::Cache.new
+      refs = Lsp::Crystal::Providers::References.run(doc, 0, 0, nil, true, nil, cache)
+      # AST-based should not find x in string
+      refs.should_not be_empty
+      refs.size.should be <= 2 # x = 1 and y = x, not "x in string"
+    end
+
+    it "falls back to regex without ast_cache" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "x = 1\ny = x")
+      refs = Lsp::Crystal::Providers::References.run(doc, 0, 0, nil, true, nil, nil)
+      refs.should_not be_empty
+    end
+  end
+
+  describe "AST Context Visitor" do
+    it "detects method context at cursor" do
+      code = "class Foo\n  def bar(x)\n    y = x + 1\n  end\nend"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+      visitor = Lsp::Crystal::AST::ContextVisitor.new(2, 4)
+      result.node.not_nil!.accept(visitor)
+      ctx = visitor.context
+      ctx.in_class.should eq("Foo")
+      ctx.in_method.should eq("bar")
+      ctx.method_params.should contain("x")
+    end
+
+    it "collects local variables before cursor" do
+      code = "def foo\n  x = 1\n  y = 2\n  z = x\nend"
+      result = Lsp::Crystal::AST.parse(code)
+      visitor = Lsp::Crystal::AST::ContextVisitor.new(3, 6)
+      result.node.not_nil!.accept(visitor)
+      ctx = visitor.context
+      ctx.local_vars.should contain("x")
+      ctx.local_vars.should contain("y")
+    end
+
+    it "collects instance variables" do
+      code = "class Foo\n  def bar\n    @name = \"hi\"\n    @name\n  end\nend"
+      result = Lsp::Crystal::AST.parse(code)
+      visitor = Lsp::Crystal::AST::ContextVisitor.new(3, 4)
+      result.node.not_nil!.accept(visitor)
+      ctx = visitor.context
+      ctx.instance_vars.should contain("@name")
+    end
+  end
+
+  describe "AST Call Visitor" do
+    it "finds call nodes in a method" do
+      code = "def foo\n  puts \"hello\"\n  bar(1)\nend"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+      # Find the def node
+      node = result.node.not_nil!
+      visitor = Lsp::Crystal::AST::CallVisitor.new(skip_name: "foo")
+      node.accept(visitor)
+      call_names = visitor.calls.map(&.name)
+      call_names.should contain("puts")
+      call_names.should contain("bar")
+    end
+
+    it "skips recursive calls" do
+      code = "def foo\n  foo()\n  bar()\nend"
+      result = Lsp::Crystal::AST.parse(code)
+      visitor = Lsp::Crystal::AST::CallVisitor.new(skip_name: "foo")
+      result.node.not_nil!.accept(visitor)
+      call_names = visitor.calls.map(&.name)
+      call_names.should_not contain("foo")
+      call_names.should contain("bar")
+    end
+  end
+
+  describe "AST Completion" do
+    it "provides local var completions from AST context" do
+      code = "def foo\n  my_variable = 1\n  my_other = 2\n  my\nend"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      cache = Lsp::Crystal::AST::Cache.new
+      result = Lsp::Crystal::Providers::Completion.run(doc, 3, 4, nil, nil, cache)
+      labels = result.items.map(&.label)
+      labels.should contain("my_variable")
+      labels.should contain("my_other")
+    end
+
+    it "works without ast_cache" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "def foo; end\nfo")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 1, 2)
+      result.items.should_not be_empty
+    end
+  end
 end

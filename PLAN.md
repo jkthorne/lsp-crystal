@@ -62,21 +62,22 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 ---
 
-## LSP Methods (39 registered)
+## LSP Methods (41 registered)
 
 | Category | Methods | Count |
 |----------|---------|-------|
 | Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` | 4 |
 | Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) | 4 |
 | Navigation | `definition`, `typeDefinition`, `implementation`, `references` | 4 |
-| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` | 8 |
+| Editing | `completion`, `completionItem/resolve`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` | 9 |
 | Symbols | `documentSymbol`, `workspace/symbol` | 2 |
 | Intelligence | `semanticTokens/full`, `semanticTokens/full/delta`, `documentHighlight`, `foldingRange`, `selectionRange` | 5 |
 | Call Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls` | 3 |
 | Type Hierarchy | `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` | 3 |
+| Diagnostics | `textDocument/diagnostic` | 1 |
 | Extras | `inlayHint`, `codeLens`, `workspace/executeCommand` | 3 |
 | Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles` | 3 |
-| **Total** | + `$/cancelRequest` (handled inline) | **39 + 1** |
+| **Total** | + `$/cancelRequest` (handled inline) | **41 + 1** |
 
 ## Providers (23)
 

@@ -171,8 +171,15 @@ module Lsp::Crystal
 
             if depth == 2 && stripped =~ /^\s*def\s+(\w+[?!]?)/
               yield $1, "#{type_name}##{$1}"
-            elsif depth == 1 && stripped =~ /^\s*(?:property|getter)[?!]?\s+(\w+)/
-              yield $1, "#{type_name}##{$1}"
+            elsif depth == 1 && stripped =~ /^\s*(property|property\?|property!|getter|getter\?|getter!|setter)\s+(\w+)/
+              macro_name = $1
+              prop_name = $2
+              # Yield getter (except for setter-only)
+              yield prop_name, "#{type_name}##{prop_name}" unless macro_name == "setter"
+              # Yield setter for property/property!/setter macros
+              if macro_name.in?("property", "property!", "setter")
+                yield "#{prop_name}=", "#{type_name}##{prop_name}="
+              end
             end
           end
         end

@@ -215,16 +215,33 @@ module Lsp::Crystal::Providers
                 sort_text: "1_#{name}"
               )
             end
-          elsif depth == 1 && stripped =~ /^\s*(?:property|getter)[?!]?\s+(\w+)/
-            name = $1
+          elsif depth == 1 && stripped =~ /^\s*(property|property\?|property!|getter|getter\?|getter!|setter)\s+(\w+)/
+            macro_name = $1
+            name = $2
             unless seen.includes?(name)
               seen.add(name)
-              items << CompletionItem.new(
-                label: name,
-                kind: CompletionItemKind::Property.value,
-                detail: "#{type_name}##{name}",
-                sort_text: "1_#{name}"
-              )
+              # Add getter (except for setter-only)
+              unless macro_name == "setter"
+                items << CompletionItem.new(
+                  label: name,
+                  kind: CompletionItemKind::Property.value,
+                  detail: "#{type_name}##{name}",
+                  sort_text: "1_#{name}"
+                )
+              end
+            end
+            # Add setter for property/property!/setter macros
+            if macro_name.in?("property", "property!", "setter")
+              setter_name = "#{name}="
+              unless seen.includes?(setter_name)
+                seen.add(setter_name)
+                items << CompletionItem.new(
+                  label: setter_name,
+                  kind: CompletionItemKind::Method.value,
+                  detail: "#{type_name}##{setter_name}",
+                  sort_text: "1_#{setter_name}"
+                )
+              end
             end
           end
         end
@@ -330,9 +347,13 @@ module Lsp::Crystal::Providers
         elsif line =~ /^\s*module\s+(\w+)/
           name = $1
           add_if_match(items, seen, name, word, CompletionItemKind::Module)
-        elsif line =~ /^\s*(?:property|getter|setter)[?!]?\s+(\w+)/
-          name = $1
-          add_if_match(items, seen, name, word, CompletionItemKind::Property)
+        elsif line =~ /^\s*(property|property\?|property!|getter|getter\?|getter!|setter)\s+(\w+)/
+          macro_name = $1
+          name = $2
+          add_if_match(items, seen, name, word, CompletionItemKind::Property) unless macro_name == "setter"
+          if macro_name.in?("property", "property!", "setter")
+            add_if_match(items, seen, "#{name}=", word, CompletionItemKind::Method)
+          end
         elsif line =~ /^\s*(\w+)\s*=/
           name = $1
           if name == name.upcase && name.size > 1

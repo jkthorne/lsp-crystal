@@ -75,13 +75,25 @@ module Lsp::Crystal
 
       def visit(node : ::Crystal::Call) : Bool
         # Detect property/getter/setter macro calls
-        if node.name.in?("property", "property?", "property!", "getter", "getter?", "getter!", "setter")
+        if Providers::MacroExpander.known_macro?(node.name)
+          container = @scope_stack.last?.try(&.name)
+          # Add the property symbol for each arg
           node.args.each do |arg|
             case arg
             when ::Crystal::Var
               add_symbol(arg.name, SymbolKind::Property, node)
             when ::Crystal::TypeDeclaration
               add_symbol(arg.var.to_s, SymbolKind::Property, node)
+            end
+          end
+          # Add synthetic method symbols from macro expansion
+          methods = Providers::MacroExpander.expand_from_call(node, container)
+          methods.each do |m|
+            case m.kind
+            when .setter?
+              add_symbol(m.name, SymbolKind::Method, node)
+            when .constructor?
+              add_symbol(m.name, SymbolKind::Method, node)
             end
           end
           return false

@@ -13,11 +13,13 @@ module Lsp::Crystal
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
+    @pending_mutex : Mutex
 
     def initialize(@transport : Transport::Stdio = Transport::Stdio.new)
       @document_store = DocumentStore.new
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
+      @pending_mutex = Mutex.new
       spawn_diagnostics_worker
     end
 
@@ -54,7 +56,9 @@ module Lsp::Crystal
     end
 
     def schedule_diagnostics(uri : String) : Nil
-      @pending_diagnostics[uri] = Time.instant + DIAGNOSTICS_DEBOUNCE
+      @pending_mutex.synchronize do
+        @pending_diagnostics[uri] = Time.instant + DIAGNOSTICS_DEBOUNCE
+      end
       @diagnostics_channel.send(uri) rescue nil
     end
 
@@ -87,16 +91,24 @@ module Lsp::Crystal
           # Debounce: wait then check if this is still the latest request
           sleep DIAGNOSTICS_DEBOUNCE
           # Drain any duplicate URIs from channel
+          uris_to_run = Set(String).new
+          uris_to_run << uri
           loop do
             select
             when more_uri = @diagnostics_channel.receive
-              uri = more_uri
+              uris_to_run << more_uri
             else
               break
             end
           end
 
-          run_diagnostics(uri)
+          # Only run diagnostics for URIs whose debounce has elapsed
+          uris_to_run.each do |pending_uri|
+            scheduled_at = @pending_mutex.synchronize { @pending_diagnostics[pending_uri]? }
+            next unless scheduled_at
+            next if Time.instant < scheduled_at
+            run_diagnostics(pending_uri)
+          end
         rescue Channel::ClosedError
           break
         rescue ex

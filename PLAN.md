@@ -67,12 +67,12 @@
 
 **Goal: Feature parity with basic language servers.**
 
-- [ ] Semantic tokens — use Crystal's parser/lexer for token classification (keywords, types, strings, comments, variables)
-- [ ] Call hierarchy — `crystal tool implementations` can provide incoming/outgoing calls
-- [ ] Inlay hints — show inferred types using `crystal tool context`
-- [ ] Code lens — "N references" count above methods/classes
-- [ ] Configuration support — handle `workspace/didChangeConfiguration`, support settings like crystal path, format on save, diagnostic delay
-- [ ] Multiple workspace folders — handle `workspace/didChangeWorkspaceFolders`
+- [x] Semantic tokens — use Crystal's parser/lexer for token classification (keywords, types, strings, comments, variables)
+- [x] Call hierarchy — `crystal tool implementations` can provide incoming/outgoing calls
+- [x] Inlay hints — show inferred types using `crystal tool context`
+- [x] Code lens — "N references" count above methods/classes
+- [x] Configuration support — handle `workspace/didChangeConfiguration`, support settings like crystal path, format on save, diagnostic delay
+- [x] Multiple workspace folders — handle `workspace/didChangeWorkspaceFolders`
 
 ## Phase 4: Smarter Intelligence
 

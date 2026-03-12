@@ -161,12 +161,6 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 ### High Impact
 
-**Completion resolve** — Implement `completionItem/resolve` to lazy-load documentation and detail. Currently all completion info is computed upfront. Resolve would speed up the initial list, especially for large projects.
-
-**Diagnostic pull model** — Implement LSP 3.17 `textDocument/diagnostic` pull model alongside push. Gives editors more control over when to request diagnostics, reducing unnecessary computation.
-
-### Medium Impact
-
 **Range and on-type formatting** — Extend `documentFormattingProvider` to also support `documentRangeFormattingProvider` and `documentOnTypeFormattingProvider`. On-type could handle `end` insertion, auto-indent after `do`/`{`, and auto-close `#{}`.
 
 **Snippet completions** — Add snippet-based completions for Crystal idioms: `spec describe/it` blocks, `JSON::Serializable` boilerplate, `property`/`getter`/`setter` with types, error handling patterns.

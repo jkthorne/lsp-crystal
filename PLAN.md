@@ -2,9 +2,10 @@
 
 ## Current State (v0.2.0)
 
-- **~4,900 LOC** source, **~3,400 LOC** specs, **223 passing tests**
+- **~5,500 LOC** source, **~3,800 LOC** specs, **266 passing tests**
 - 20 providers, 24 handlers, 0 external dependencies (Crystal stdlib only)
-- Clean layered architecture: Transport → Dispatcher → Handlers → Providers → CrystalTool
+- Clean layered architecture: Transport → Dispatcher → Handlers → Providers → CrystalTool / AST
+- Crystal AST integration via `compiler/crystal/syntax` — zero external dependencies maintained
 - Two-tier async dispatch: slow crystal-tool requests run in fibers, fast requests stay synchronous
 - File watching via dynamic `client/registerCapability` registration
 - Diagnostics content-hash caching, active file priority, configurable debounce
@@ -59,6 +60,7 @@ All five original plan phases plus high-impact improvements are complete:
 - **Phase 4 — Smarter Intelligence:** Context-aware completion, doc comments in hover, type-aware rename, extract refactoring, type definition
 - **Phase 5 — Polish & Hardening:** Structured logging, integration/stress/large-file tests, graceful shutdown, CI/CD, editor docs
 - **Phase 6 — Concurrency & Responsiveness:** Async dispatch with CancellationToken, file watching via dynamic registration, diagnostics caching with content hashing, active file priority, configurable debounce
+- **Phase 7 — Crystal AST Integration:** AST-based document symbols, lexer-based semantic tokens, two-tier diagnostics (instant syntax + debounced full), AST-aware references/highlights/rename (ignores strings/comments), AST context completion, AST call hierarchy. All providers fall back to regex on parse failure.
 
 ---
 
@@ -66,16 +68,14 @@ All five original plan phases plus high-impact improvements are complete:
 
 These are known architectural constraints that limit quality but are not blockers for typical use:
 
-1. **Regex-based providers** — Document symbols, references, highlights, and rename are pattern-matching based, not AST-aware. This causes occasional false positives (e.g. matching a word inside a string or comment).
-2. **No incremental compilation** — Every diagnostic runs a full `crystal build --no-codegen`. Content-hash caching avoids redundant runs, but each run is still whole-program.
-3. **Semantic tokens are regex-based** — Not using Crystal's actual lexer/parser, so edge cases in string interpolation, heredocs, and macros may be misclassified.
+1. **No incremental compilation** — Every full diagnostic runs a full `crystal build --no-codegen`. Content-hash caching avoids redundant runs, but each run is still whole-program. Syntax errors are instant via Crystal::Parser.
+2. **Cross-file references use regex** — In-document references use AST (accurate), but cross-file search still uses workspace index regex. Parsing every workspace file on each reference request would be too slow.
 
 ## Future Work
 
 Potential improvements if the project continues beyond 1.0:
 
 ### High Impact
-- **Crystal AST integration** — Use Crystal's compiler API for true semantic analysis instead of regex. Would dramatically improve accuracy of symbols, references, rename, and completion. Blocked on Crystal exposing a stable compiler library API.
 - **Incremental diagnostics** — Cache compilation state between runs. Requires Crystal compiler changes for partial re-checking.
 
 ### Medium Impact

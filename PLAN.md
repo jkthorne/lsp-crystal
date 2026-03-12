@@ -1,26 +1,42 @@
-# Crystal LSP — Status & Future Plan
+# Crystal LSP — Project Status & Roadmap
 
-## Current State (v0.2.0)
+## Current State
 
-- **~6,400 LOC** source, **~4,550 LOC** specs, **313 passing tests**
-- 23 providers, 27 handlers, 0 external dependencies (Crystal stdlib only)
-- Clean layered architecture: Transport → Dispatcher → Handlers → Providers → CrystalTool / AST
-- Crystal AST integration via `compiler/crystal/syntax` — zero external dependencies maintained
-- Two-tier async dispatch: slow crystal-tool requests run in fibers, fast requests stay synchronous
-- File watching via dynamic `client/registerCapability` registration
-- Diagnostics content-hash caching, diff-based publishing, active file priority, configurable debounce
-- Require dependency graph for targeted invalidation of affected files
-- Multi-file diagnostic routing (errors published under their source file URI)
-- Idle background pre-compilation for cache warming
-- Structured JSON logging with request tracing, graceful signal handling
-- GitHub Actions CI against Crystal latest + nightly
-- Editor docs for VS Code, Neovim, Helix, Zed, Sublime Text, Emacs
+- **7,088 LOC** source across 74 files, **4,610 LOC** specs, **313 passing tests**
+- 22 providers, 26 handlers, 4 AST visitors, 0 external dependencies
+- Crystal >= 1.19.1, stdlib only (includes `compiler/crystal/syntax`)
+- MIT licensed, CI on Crystal latest + nightly
+
+### Architecture
+
+```
+stdin/stdout
+    │
+Transport::Stdio (JSON-RPC 2.0, Content-Length framing, 10MB limit)
+    │
+Server (main loop, project root detection, diagnostics worker)
+    │
+Dispatcher (lazy-init, routes methods → handlers)
+    │
+Handlers (26 files — extract params, call provider, format response)
+    │
+Providers (22 files — business logic)
+    ├─ CrystalTool (compiler invocations, 30s timeout, cancellation)
+    ├─ DocumentStore (in-memory incremental editing)
+    ├─ AST subsystem (parser, cache, lexer tokenizer, 4 visitors)
+    ├─ WorkspaceIndex (background indexing, regex symbol search)
+    └─ RequireGraph (dependency edges, BFS transitive dependents)
+```
+
+**Concurrency model:** Main fiber reads stdin synchronously. Slow methods (definition, hover, formatting, rename, diagnostics) run in spawned fibers with `CancellationToken` support. Diagnostics use mutex-protected channel-based debouncing (500ms default).
+
+**AST integration:** Per-document AST cache keyed by URI + version. Two-tier diagnostics: instant syntax errors via `Crystal::Parser`, debounced full build via `crystal build --no-codegen`. All AST-enhanced providers fall back to regex on parse failure.
 
 ---
 
-## Implemented Features
+## Feature Inventory
 
-### LSP Methods Supported
+### LSP Methods (40+)
 
 | Category | Methods |
 |----------|---------|
@@ -30,71 +46,133 @@
 | Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `rangeFormatting`, `onTypeFormatting`, `codeAction`, `linkedEditingRange` |
 | Symbols | `documentSymbol`, `workspace/symbol` |
 | Intelligence | `semanticTokens/full`, `documentHighlight`, `foldingRange`, `selectionRange` |
-| Advanced | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`, `inlayHint`, `codeLens`, `documentLink`, `documentColor`, `colorPresentation` |
+| Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` |
+| Extras | `inlayHint`, `codeLens`, `codeLens/resolve`, `documentLink`, `documentColor`, `colorPresentation` |
 | Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles`, `window/workDoneProgress` |
 | Concurrency | `$/cancelRequest`, async dispatch for slow methods |
 
+### Providers by Size
+
+| Provider | LOC | Capabilities |
+|----------|-----|-------------|
+| code_action | 486 | Unused var fix, method stub, add require, organize requires, extract variable/method, convert block |
+| completion | 360 | Keywords, snippets, context-aware dot-completion (`.`, `:`, `@` triggers) |
+| call_hierarchy | 354 | Incoming/outgoing calls, AST-based with regex fallback |
+| semantic_tokens | 290 | Lexer-based tokenization, 10+ token types |
+| document_symbol | 228 | Hierarchical outline (classes, methods, macros, constants, properties) |
+| inlay_hints | 221 | Variable/parameter type annotations |
+| type_hierarchy | 211 | Supertypes/subtypes for classes, structs, modules |
+| signature_help | 146 | Active parameter tracking, `(` and `,` triggers |
+| diagnostics | 142 | Two-tier, content-hash caching, diff-based publishing, severity filtering |
+| selection_range | 138 | Word → block → method → class → document expansion |
+| rename | 125 | Type-aware, AST-based with prepare support |
+| document_highlight | 123 | Read/write occurrence classification |
+| folding_range | 119 | Blocks, requires, comment sections |
+| references | 106 | AST in-document, regex cross-file |
+| hover | 103 | Type info + doc comments via crystal tool context |
+| type_definition | 102 | Navigate to variable/expression type |
+| linked_editing_range | 99 | Block keyword ↔ `end` simultaneous editing |
+| code_lens | 94 | Reference counts above methods/classes |
+| workspace_symbol | 59 | Cross-file regex symbol search |
+| implementation | 34 | Abstract type implementations |
+| definition | 34 | Via crystal tool implementations |
+| formatting | 20 | crystal tool format (full + range + on-type) |
+
 ### Infrastructure
 
-- 30s configurable timeout on all `crystal tool` invocations with cancellation support
-- Concurrent request handling: slow methods (definition, hover, formatting, rename, etc.) run in spawned fibers with `CancellationToken` support
-- `RequestTracker` manages in-flight async requests; `$/cancelRequest` terminates running crystal processes
-- File watching: dynamic `client/registerCapability` for `**/*.cr` files; detects external changes (git checkout, other editors)
-- Diagnostics content-hash caching: skips re-running compiler when content unchanged
-- Diagnostic diffing: compares by value before publishing, eliminates editor flicker
-- Multi-file diagnostic routing: errors from `crystal build` published under their source file URI, stale diagnostics cleared automatically
-- Require dependency graph (`RequireGraph`): resolves relative, absolute, glob, and directory-form requires; tracks dependency/dependent edges; BFS transitive dependents
-- Smart file-change invalidation: only re-diagnoses open files that transitively depend on the changed external file (falls back to all-open when graph not built)
-- Idle background pre-compilation: warms OS/compiler caches after 5s idle, cancelled on edit, configurable via `precompileOnIdle`
-- Active file priority: most recently edited file gets diagnosed first
-- Configurable debounce via `diagnosticsDelay` setting (500ms default)
-- Diagnostic severity filtering (`diagnosticsMinSeverity`) and message pattern suppression (`diagnosticsSuppressedPatterns`)
-- Mutex-protected diagnostics with channel-based debouncing
-- Content-Length validation (10MB max)
-- Background workspace indexing with incremental updates
-- In-memory symbol cache per document
-- Server→client request support (`send_request` with auto-incrementing IDs)
-- SIGTERM/SIGINT graceful shutdown with in-flight request cancellation
-- JSON structured logging with request ID and duration tracing
+- **Transport:** Content-Length framing, 10MB max, header validation
+- **Diagnostics:** Content-hash caching, diff-based publishing (no editor flicker), multi-file error routing, active file priority, configurable debounce/severity/pattern suppression
+- **File watching:** Dynamic `client/registerCapability` for `**/*.cr`; detects external changes
+- **RequireGraph:** Resolves relative/absolute/glob/directory requires; BFS transitive dependents; targeted invalidation on file changes
+- **Background tasks:** Idle pre-compilation (5s), workspace indexing with incremental updates
+- **Logging:** Structured JSON with request ID and duration tracing
+- **Shutdown:** SIGTERM/SIGINT graceful handling with in-flight request cancellation
 
 ---
 
-## Completed Phases
+## Development History
 
-All five original plan phases plus high-impact improvements are complete:
-
-- **Phase 1 — Reliability & Safety:** Timeouts, race fix, Content-Length limit, temp file cleanup, URI validation, symlink handling
-- **Phase 2 — Performance:** File index cache, symbol cache, workspace index, references optimization, progress reporting
-- **Phase 3 — Core Features:** Semantic tokens, call hierarchy, inlay hints, code lens, configuration, workspace folders
-- **Phase 4 — Smarter Intelligence:** Context-aware completion, doc comments in hover, type-aware rename, extract refactoring, type definition
-- **Phase 5 — Polish & Hardening:** Structured logging, integration/stress/large-file tests, graceful shutdown, CI/CD, editor docs
-- **Phase 6 — Concurrency & Responsiveness:** Async dispatch with CancellationToken, file watching via dynamic registration, diagnostics caching with content hashing, active file priority, configurable debounce
-- **Phase 7 — Crystal AST Integration:** AST-based document symbols, lexer-based semantic tokens, two-tier diagnostics (instant syntax + debounced full), AST-aware references/highlights/rename (ignores strings/comments), AST context completion, AST call hierarchy. All providers fall back to regex on parse failure.
-- **Phase 8 — Incremental Diagnostics:** Diagnostic diffing (skip identical publishes), multi-file error routing, require dependency graph with targeted invalidation, idle background pre-compilation for cache warming.
-- **Phase 9 — Medium-Impact Features:** Diagnostic severity configuration, linked editing ranges for block/end pairs, type hierarchy (supertypes/subtypes), enhanced code actions (generate method stub, add missing require, convert to multi-line block).
-- **Phase 10 — Low-Impact Features:** Range formatting (format selected regions), on-type formatting (auto-insert `end` after block keywords), document links (clickable `require` paths), color provider (hex color literal previews).
+| Phase | Focus | Key Deliverables |
+|-------|-------|-----------------|
+| 1 | Reliability | Timeouts, race fix, Content-Length limit, temp file cleanup, URI/symlink handling |
+| 2 | Performance | File index cache, symbol cache, workspace indexing, progress reporting |
+| 3 | Core Features | Semantic tokens, call hierarchy, inlay hints, code lens, configuration |
+| 4 | Intelligence | Context-aware completion, doc comments, type-aware rename, extract refactoring |
+| 5 | Polish | Structured logging, integration tests, graceful shutdown, CI/CD, editor docs |
+| 6 | Concurrency | Async dispatch, CancellationToken, file watching, diagnostics caching |
+| 7 | AST Integration | Parser/lexer/visitors, two-tier diagnostics, AST-aware providers with regex fallback |
+| 8 | Incremental Diagnostics | Diagnostic diffing, multi-file routing, require graph, idle pre-compilation |
+| 9 | Medium Features | Severity config, linked editing, type hierarchy, enhanced code actions |
+| 10 | Low Features | Range formatting, on-type formatting, document links, color provider |
 
 ---
 
-## Remaining Limitations
+## Known Limitations
 
-These are known architectural constraints that limit quality but are not blockers for typical use:
+1. **No incremental compilation** — Each full diagnostic runs `crystal build --no-codegen` on the whole program. Content-hash caching, diagnostic diffing, and require-graph targeting reduce redundant work, but each invocation is still whole-program. Syntax errors are instant via `Crystal::Parser`.
 
-1. **No incremental compilation** — Every full diagnostic runs a full `crystal build --no-codegen`. Content-hash caching, diagnostic diffing, and require-graph-targeted invalidation reduce redundant work, but each run is still whole-program. Syntax errors are instant via Crystal::Parser.
-2. **Cross-file references use regex** — In-document references use AST (accurate), but cross-file search still uses workspace index regex. Parsing every workspace file on each reference request would be too slow.
+2. **Cross-file references use regex** — In-document references use AST (accurate), but cross-file search relies on the workspace index regex. Parsing every workspace file per request would be too slow without persistent cross-file AST state.
 
-## Future Work
+3. **No macro expansion** — Crystal macros generate code at compile time. The LSP cannot expand macros, so macro-generated methods/types are invisible to navigation, completion, and symbols. Only `crystal tool` invocations (which run the compiler) can see through macros.
 
-Potential improvements if the project continues beyond 1.0:
+4. **Single-project scope** — The server assumes one Crystal project per workspace root (detected via `shard.yml`). Multi-root workspaces with independent shards are not fully supported.
 
-### Medium Impact (Phase 9 — Complete)
-- ~~**Type hierarchy** — `typeHierarchy/supertypes` and `typeHierarchy/subtypes` for inheritance browsing.~~
-- ~~**Linked editing ranges** — Simultaneous editing of matching pairs (e.g. block/end).~~
-- ~~**Workspace edits** — Multi-file refactoring support beyond rename.~~
-- ~~**Diagnostic severity configuration** — Let users suppress specific warning categories.~~
+5. **No type inference without compiler** — Type information comes from `crystal tool context` which requires a full compiler pass. The AST subsystem provides syntax-level intelligence but cannot infer types independently.
 
-### Low Impact (Phase 10 — Complete)
-- ~~**Range formatting** — Format selected regions instead of whole file.~~
-- ~~**On-type formatting** — Auto-format as the user types.~~
-- ~~**Document links** — Make `require` paths clickable.~~
-- ~~**Color provider** — Preview color literals in the gutter.~~
+---
+
+## Future Roadmap
+
+### High Impact
+
+**Persistent cross-file AST index**
+Build and maintain an in-memory index of parsed ASTs for all workspace `.cr` files. This would enable accurate cross-file references, rename, and go-to-definition without shelling out to `crystal tool`. Update incrementally on file changes. This is the single biggest quality improvement possible — it would make most navigation instant and accurate.
+
+**Macro-aware intelligence**
+Explore using `crystal tool expand` to expand macros and feed results into the AST subsystem. This would make macro-generated methods visible to completion, hover, and navigation. Challenging due to Crystal's compile-time macro system, but high value since macros are pervasive in Crystal code (e.g., `property`, `getter`, `JSON::Serializable`).
+
+**Semantic tokens delta**
+Implement `semanticTokens/full/delta` to send only changed token ranges on edits instead of the full token list. Reduces bandwidth and improves highlighting responsiveness on large files.
+
+### Medium Impact
+
+**Completion resolve**
+Implement `completionItem/resolve` to lazy-load documentation and detail for completion items. Currently all completion info is computed upfront. Resolve would speed up the initial completion list, especially for large projects.
+
+**Diagnostic pull model**
+Implement LSP 3.17 `textDocument/diagnostic` pull model alongside the current push model. Pull diagnostics give editors more control over when to request diagnostics and can reduce unnecessary computation.
+
+**Smarter on-type formatting**
+Extend on-type formatting beyond `end` insertion: auto-indent after `do`/`{`, auto-close string interpolation `#{}`, auto-indent `when` in case statements.
+
+**Snippet completions for common patterns**
+Add snippet-based completions for Crystal idioms: `spec describe/it` blocks, `JSON::Serializable` boilerplate, `property`/`getter`/`setter` with types, error handling patterns.
+
+### Low Impact / Exploratory
+
+**Debug Adapter Protocol (DAP)**
+Crystal has limited debugging support, but a basic DAP implementation could provide breakpoints and variable inspection if Crystal gains better debug info in future releases.
+
+**Test discovery and execution**
+Detect `spec/**/*_spec.cr` files, extract `describe`/`it` blocks, and expose them via code lens or a custom LSP extension for in-editor test running.
+
+**Workspace symbol resolve**
+Implement `workspaceSymbol/resolve` to lazy-load location details for workspace symbol search results.
+
+**Goto declaration**
+Implement `textDocument/declaration` as distinct from definition, pointing to forward declarations or abstract method signatures.
+
+---
+
+## Project Health
+
+| Metric | Value |
+|--------|-------|
+| Source LOC | 7,088 |
+| Spec LOC | 4,610 |
+| Tests passing | 313 |
+| Tests failing | 1 (references count mismatch) |
+| External deps | 0 |
+| Crystal version | >= 1.19.1 |
+| CI | GitHub Actions (latest + nightly) |
+| License | MIT |

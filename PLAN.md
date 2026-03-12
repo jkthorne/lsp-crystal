@@ -1,105 +1,132 @@
 # Crystal LSP — Project Status & Roadmap
 
-## Current State
+## Overview
+
+A full-featured Language Server Protocol implementation for Crystal, written in pure Crystal with zero external dependencies. Provides intelligent code assistance — navigation, completion, refactoring, diagnostics, and more — by combining a fast AST subsystem with `crystal tool` compiler integration.
 
 - **8,686 LOC** source across 80 files, **5,623 LOC** specs, **389 passing tests**
 - 23 providers, 28 handlers, 5 AST visitors, 12 infrastructure modules
 - Crystal >= 1.19.1, stdlib only (includes `compiler/crystal/syntax`)
 - MIT licensed, CI on Crystal latest + nightly
 
-### Architecture
+---
+
+## Architecture
 
 ```
 stdin/stdout
     │
-Transport::Stdio (JSON-RPC 2.0, Content-Length framing, 10MB limit)
+Transport::Stdio ─── JSON-RPC 2.0, Content-Length framing, 10MB limit
     │
-Server (main loop, project root detection, diagnostics worker)
+Server ─── main loop, project root detection, diagnostics worker, signal handling
     │
-Dispatcher (lazy-init, routes methods → handlers)
+Dispatcher ─── lazy-init, routes 39 methods → handlers, sync/async dispatch
     │
-Handlers (28 files — extract params, call provider, format response)
+Handlers (28 files) ─── extract params, call provider, format response
     │
-Providers (23 files — business logic)
-    ├─ CrystalTool (compiler invocations, 30s timeout, cancellation, request coalescing)
-    ├─ ToolResultCache (LRU cache for tool results, 500 entries, 60s TTL)
-    ├─ DocumentStore (in-memory incremental editing)
-    ├─ AST subsystem (parser, cache, lexer tokenizer, 5 visitors)
-    ├─ AST::Index (persistent cross-file symbol index, background parsing)
-    ├─ WorkspaceIndex (background indexing, regex symbol search)
-    └─ RequireGraph (dependency edges, BFS transitive dependents)
+Providers (23 files) ─── business logic
+    ├─ CrystalTool ─── compiler invocations, 30s timeout, cancellation, request coalescing
+    ├─ ToolResultCache ─── LRU (500 entries, 60s TTL) for tool results
+    ├─ DocumentStore ─── in-memory incremental text editing
+    ├─ AST subsystem ─── parser, cache, lexer tokenizer, 5 visitors
+    │   ├─ AST::Index ─── persistent cross-file symbol index, background parsing
+    │   └─ IndexVisitor, SymbolVisitor, ReferenceVisitor, ContextVisitor, CallVisitor
+    ├─ WorkspaceIndex ─── background indexing, regex symbol search
+    └─ RequireGraph ─── dependency edges, BFS transitive dependents
 ```
 
-**Concurrency model:** Main fiber reads stdin synchronously. Slow methods (definition, hover, formatting, rename, diagnostics) run in spawned fibers with `CancellationToken` support. Diagnostics use mutex-protected channel-based debouncing (500ms default). Hover runs `context` and `implementations` in parallel via spawned fibers. Request coalescing deduplicates concurrent identical `crystal tool` invocations.
+### Concurrency
 
-**AST integration:** Per-document AST cache keyed by URI + version. Persistent cross-file AST index parses all workspace `.cr` files at startup (batched, ~1ms/file) and updates incrementally on edits. Two-tier diagnostics: instant syntax errors via `Crystal::Parser`, debounced full build via `crystal build --no-codegen`. All AST-enhanced providers fall back to regex on parse failure.
+Main fiber reads stdin synchronously. Nine methods dispatch asynchronously in spawned fibers with `CancellationToken` support: `definition`, `typeDefinition`, `implementation`, `hover`, `formatting`, `rename`, `prepareCallHierarchy`, and both call hierarchy directions. Diagnostics run in a dedicated worker fiber with mutex-protected channel-based debouncing (500ms default). Hover dispatches `context` and `implementations` tool calls in parallel. Request coalescing deduplicates concurrent identical `crystal tool` invocations — the first caller runs the process, others wait for its result.
+
+### AST Integration
+
+Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didClose`. Persistent cross-file AST index parses all workspace `.cr` files at startup (batched, ~1ms/file) and updates incrementally on edits. Two-tier diagnostics: instant syntax errors via `Crystal::Parser`, debounced full build via `crystal build --no-codegen`. All AST-enhanced providers fall back to regex on parse failure so editing never blocks on a broken file.
+
+### Infrastructure Modules
+
+| Module | LOC | Role |
+|--------|-----|------|
+| server | 419 | Main loop, diagnostics worker, project detection, signal handling, idle pre-compilation |
+| crystal_tool | 253 | Process spawning, 30s timeout, cancellation, request coalescing |
+| require_graph | 246 | Resolve relative/absolute/glob/directory requires, BFS transitive dependents |
+| workspace_index | 233 | Background file indexing, regex symbol search, progress reporting |
+| dispatcher | 190 | Method routing, sync/async dispatch, cancel request handling |
+| diagnostics (infra) | 142 | Content-hash caching, diff-based publishing, multi-file routing |
+| document_store | 136 | In-memory document state, incremental editing |
+| tool_result_cache | 122 | LRU cache for crystal tool results |
+| configuration | 75 | Runtime settings, diagnostic severity/debounce/suppression |
+| request_tracker | 58 | In-flight request tracking, cancellation coordination |
+| logger | 51 | Structured JSON logging with request ID and duration |
+| cancellation_token | 15 | Fiber-safe cancellation primitive |
 
 ---
 
-## Feature Inventory
+## LSP Methods (39 registered)
 
-### LSP Methods (39 registered)
+| Category | Methods | Count |
+|----------|---------|-------|
+| Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` | 4 |
+| Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) | 4 |
+| Navigation | `definition`, `typeDefinition`, `implementation`, `references` | 4 |
+| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` | 8 |
+| Symbols | `documentSymbol`, `workspace/symbol` | 2 |
+| Intelligence | `semanticTokens/full`, `semanticTokens/full/delta`, `documentHighlight`, `foldingRange`, `selectionRange` | 5 |
+| Call Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls` | 3 |
+| Type Hierarchy | `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` | 3 |
+| Extras | `inlayHint`, `codeLens`, `workspace/executeCommand` | 3 |
+| Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles` | 3 |
+| **Total** | + `$/cancelRequest` (handled inline) | **39 + 1** |
 
-| Category | Methods |
-|----------|---------|
-| Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` |
-| Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) |
-| Navigation | `definition`, `typeDefinition`, `implementation`, `references` |
-| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` |
-| Symbols | `documentSymbol`, `workspace/symbol` |
-| Intelligence | `semanticTokens/full`, `semanticTokens/full/delta`, `documentHighlight`, `foldingRange`, `selectionRange` |
-| Call Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls` |
-| Type Hierarchy | `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` |
-| Extras | `inlayHint`, `codeLens`, `workspace/executeCommand` |
-| Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles` |
-| Concurrency | `$/cancelRequest`, async dispatch for slow methods |
+## Providers (23)
 
-### Providers by Size
-
-| Provider | LOC | Capabilities |
+| Provider | LOC | What it does |
 |----------|-----|-------------|
-| code_action | 529 | Unused var fix, method stub, add require, organize requires, extract variable/method, convert block, expand macro |
+| code_action | 529 | 7 actions: unused var fix, method stub, add require, organize requires, extract variable, extract method, convert block syntax, expand macro |
 | semantic_tokens | 383 | Lexer-based tokenization, 10+ token types, delta encoding with per-document token cache |
 | completion | 381 | Keywords, snippets, context-aware dot-completion (`.`, `:`, `@` triggers) |
 | call_hierarchy | 354 | Incoming/outgoing calls, AST-based with regex fallback |
-| document_symbol | 228 | Hierarchical outline (classes, methods, macros, constants, properties) |
-| inlay_hints | 221 | Variable/parameter type annotations |
+| hover | 316 | Type info + doc comments, Tier 1 pattern macro expansion, Tier 2 `crystal tool expand` (cached, non-blocking), parallel tool dispatch, AST index doc lookup |
+| document_symbol | 228 | Hierarchical outline — classes, methods, macros, constants, properties |
+| inlay_hints | 221 | Variable and parameter type annotations |
 | type_hierarchy | 211 | Supertypes/subtypes for classes, structs, modules |
+| macro_expander | 147 | Pattern-based expansion for `property`, `getter`, `setter`, `record` macros |
 | signature_help | 146 | Active parameter tracking, `(` and `,` triggers |
-| diagnostics | 142 | Two-tier, content-hash caching, diff-based publishing, severity filtering |
+| diagnostics | 142 | Two-tier (syntax + full build), content-hash caching, diff-based publishing, severity filtering |
 | selection_range | 138 | Word → block → method → class → document expansion |
 | rename | 125 | Type-aware, AST-based with prepare support |
+| references | 124 | AST in-document, AST index cross-file, regex fallback |
 | document_highlight | 123 | Read/write occurrence classification |
 | folding_range | 119 | Blocks, requires, comment sections |
-| references | 124 | AST in-document, AST index cross-file, regex fallback |
-| hover | 316 | Type info + doc comments, Tier 1 pattern macro expansion, Tier 2 `crystal tool expand` (cached, non-blocking), parallel tool dispatch, AST index doc lookup |
-| type_definition | 102 | Navigate to variable/expression type |
+| type_definition | 102 | Navigate to variable/expression type source |
 | linked_editing_range | 99 | Block keyword ↔ `end` simultaneous editing |
 | code_lens | 94 | Reference counts above methods/classes |
-| macro_expander | 147 | Pattern-based expansion for `property`, `getter`, `setter`, `record` macros |
 | workspace_symbol | 73 | Cross-file symbol search via AST index with regex fallback |
-| implementation | 34 | Abstract type implementations |
 | definition | 65 | AST index lookup with `crystal tool` fallback |
+| implementation | 34 | Abstract type implementations |
 | formatting | 20 | `crystal tool format` (full document) |
 
-### Infrastructure
+### AST Subsystem
 
-- **Transport:** Content-Length framing, 10MB max, header validation
-- **Diagnostics:** Content-hash caching, diff-based publishing (no editor flicker), multi-file error routing, active file priority, configurable debounce/severity/pattern suppression
-- **File watching:** Dynamic `client/registerCapability` for `**/*.cr`; detects external changes
-- **RequireGraph:** Resolves relative/absolute/glob/directory requires; BFS transitive dependents; targeted invalidation on file changes
-- **Tool result cache:** LRU (500 entries, 60s TTL) caching of `crystal tool` results; avoids redundant compiler invocations for hover, definition, and expand at the same position
-- **Request coalescing:** Concurrent identical tool invocations deduplicate — first runs the process, others wait for its result
-- **Background tasks:** Idle pre-compilation (5s), workspace indexing with incremental updates, background macro expansion
-- **Logging:** Structured JSON with request ID and duration tracing
-- **Shutdown:** SIGTERM/SIGINT graceful handling with in-flight request cancellation
+| File | LOC | Role |
+|------|-----|------|
+| index_visitor | 303 | Walks AST to build persistent cross-file symbol index |
+| lexer_tokenizer | 271 | Drives Crystal::Lexer for semantic token generation |
+| index | 225 | Cross-file symbol storage, lookup, incremental updates |
+| reference_visitor | 159 | Finds all references to a symbol within a file |
+| symbol_visitor | 154 | Extracts hierarchical document symbols |
+| context_visitor | 118 | Resolves symbol at cursor position |
+| parser | 53 | Wrapper around Crystal::Parser with error recovery |
+| cache | 54 | Per-document AST cache keyed by URI + version |
+| call_visitor | 49 | Extracts call sites for call hierarchy |
+| indexed_symbol | 31 | Symbol data structure for the cross-file index |
 
 ---
 
 ## Development History
 
-| Phase | Focus | Key Deliverables |
-|-------|-------|-----------------|
+| Phase | Focus | Delivered |
+|-------|-------|-----------|
 | 1 | Reliability | Timeouts, race fix, Content-Length limit, temp file cleanup, URI/symlink handling |
 | 2 | Performance | File index cache, symbol cache, workspace indexing, progress reporting |
 | 3 | Core Features | Semantic tokens, call hierarchy, inlay hints, code lens, configuration |
@@ -170,10 +197,10 @@ Implement `textDocument/declaration` as distinct from definition, pointing to fo
 
 | Metric | Value |
 |--------|-------|
+| Source files | 80 |
 | Source LOC | 8,686 |
 | Spec LOC | 5,623 |
-| Tests passing | 389 |
-| Tests failing | 0 |
+| Tests | 389 passing, 0 failing |
 | External deps | 0 |
 | Crystal version | >= 1.19.1 |
 | CI | GitHub Actions (latest + nightly) |

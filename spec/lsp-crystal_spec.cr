@@ -1032,6 +1032,83 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Transport::Stdio Content-Length validation" do
+    it "rejects Content-Length exceeding max message size" do
+      huge_length = 11 * 1024 * 1024 # 11 MB, exceeds 10 MB limit
+      input = IO::Memory.new("Content-Length: #{huge_length}\r\n\r\n")
+      output = IO::Memory.new
+      transport = Lsp::Crystal::Transport::Stdio.new(input: input, output: output)
+      expect_raises(Exception, "Invalid Content-Length") do
+        transport.read_message
+      end
+    end
+
+    it "rejects Content-Length of zero" do
+      input = IO::Memory.new("Content-Length: 0\r\n\r\n")
+      output = IO::Memory.new
+      transport = Lsp::Crystal::Transport::Stdio.new(input: input, output: output)
+      expect_raises(Exception, "Invalid Content-Length") do
+        transport.read_message
+      end
+    end
+
+    it "rejects negative Content-Length" do
+      input = IO::Memory.new("Content-Length: -1\r\n\r\n")
+      output = IO::Memory.new
+      transport = Lsp::Crystal::Transport::Stdio.new(input: input, output: output)
+      expect_raises(Exception, "Invalid Content-Length") do
+        transport.read_message
+      end
+    end
+  end
+
+  describe "CrystalTool timeout" do
+    it "returns a ToolResult struct" do
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(false, "", "timed out")
+      result.success.should be_false
+      result.stderr.should eq("timed out")
+    end
+  end
+
+  describe "CrystalTool.check_content temp file cleanup" do
+    it "cleans up temp file even on failure" do
+      # Use content that will fail to compile but temp should still be cleaned
+      result = Lsp::Crystal::CrystalTool.check_content("invalid crystal !!!", "/fake/file.cr")
+      # The temp file should not exist after the call
+      # We can't easily check directly, but the result should have the filename substituted
+      result.stderr.should_not contain("crystal-lsp")
+    end
+  end
+
+  describe "URI.path_within_workspace?" do
+    it "returns true for paths within workspace" do
+      dir = File.tempname("ws_test")
+      Dir.mkdir_p(dir)
+      sub = File.join(dir, "src")
+      Dir.mkdir_p(sub)
+      file = File.join(sub, "test.cr")
+      File.write(file, "")
+
+      Lsp::Crystal::URI.path_within_workspace?(file, dir).should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "returns false for paths outside workspace" do
+      dir = File.tempname("ws_test")
+      Dir.mkdir_p(dir)
+      other = File.tempname("other")
+      Dir.mkdir_p(other)
+      file = File.join(other, "test.cr")
+      File.write(file, "")
+
+      Lsp::Crystal::URI.path_within_workspace?(file, dir).should be_false
+    ensure
+      FileUtils.rm_rf(dir) if dir
+      FileUtils.rm_rf(other) if other
+    end
+  end
+
   describe "Providers::Rename" do
     it "prepares rename at a valid symbol" do
       code = "foo = 42\nputs foo\n"

@@ -2,13 +2,16 @@
 
 ## Current State (v0.2.0)
 
-- **~5,500 LOC** source, **~3,800 LOC** specs, **266 passing tests**
+- **~5,800 LOC** source, **~4,200 LOC** specs, **287 passing tests**
 - 20 providers, 24 handlers, 0 external dependencies (Crystal stdlib only)
 - Clean layered architecture: Transport → Dispatcher → Handlers → Providers → CrystalTool / AST
 - Crystal AST integration via `compiler/crystal/syntax` — zero external dependencies maintained
 - Two-tier async dispatch: slow crystal-tool requests run in fibers, fast requests stay synchronous
 - File watching via dynamic `client/registerCapability` registration
-- Diagnostics content-hash caching, active file priority, configurable debounce
+- Diagnostics content-hash caching, diff-based publishing, active file priority, configurable debounce
+- Require dependency graph for targeted invalidation of affected files
+- Multi-file diagnostic routing (errors published under their source file URI)
+- Idle background pre-compilation for cache warming
 - Structured JSON logging with request tracing, graceful signal handling
 - GitHub Actions CI against Crystal latest + nightly
 - Editor docs for VS Code, Neovim, Helix, Zed, Sublime Text, Emacs
@@ -38,6 +41,11 @@
 - `RequestTracker` manages in-flight async requests; `$/cancelRequest` terminates running crystal processes
 - File watching: dynamic `client/registerCapability` for `**/*.cr` files; detects external changes (git checkout, other editors)
 - Diagnostics content-hash caching: skips re-running compiler when content unchanged
+- Diagnostic diffing: compares by value before publishing, eliminates editor flicker
+- Multi-file diagnostic routing: errors from `crystal build` published under their source file URI, stale diagnostics cleared automatically
+- Require dependency graph (`RequireGraph`): resolves relative, absolute, glob, and directory-form requires; tracks dependency/dependent edges; BFS transitive dependents
+- Smart file-change invalidation: only re-diagnoses open files that transitively depend on the changed external file (falls back to all-open when graph not built)
+- Idle background pre-compilation: warms OS/compiler caches after 5s idle, cancelled on edit, configurable via `precompileOnIdle`
 - Active file priority: most recently edited file gets diagnosed first
 - Configurable debounce via `diagnosticsDelay` setting (500ms default)
 - Mutex-protected diagnostics with channel-based debouncing
@@ -61,6 +69,7 @@ All five original plan phases plus high-impact improvements are complete:
 - **Phase 5 — Polish & Hardening:** Structured logging, integration/stress/large-file tests, graceful shutdown, CI/CD, editor docs
 - **Phase 6 — Concurrency & Responsiveness:** Async dispatch with CancellationToken, file watching via dynamic registration, diagnostics caching with content hashing, active file priority, configurable debounce
 - **Phase 7 — Crystal AST Integration:** AST-based document symbols, lexer-based semantic tokens, two-tier diagnostics (instant syntax + debounced full), AST-aware references/highlights/rename (ignores strings/comments), AST context completion, AST call hierarchy. All providers fall back to regex on parse failure.
+- **Phase 8 — Incremental Diagnostics:** Diagnostic diffing (skip identical publishes), multi-file error routing, require dependency graph with targeted invalidation, idle background pre-compilation for cache warming.
 
 ---
 
@@ -68,15 +77,12 @@ All five original plan phases plus high-impact improvements are complete:
 
 These are known architectural constraints that limit quality but are not blockers for typical use:
 
-1. **No incremental compilation** — Every full diagnostic runs a full `crystal build --no-codegen`. Content-hash caching avoids redundant runs, but each run is still whole-program. Syntax errors are instant via Crystal::Parser.
+1. **No incremental compilation** — Every full diagnostic runs a full `crystal build --no-codegen`. Content-hash caching, diagnostic diffing, and require-graph-targeted invalidation reduce redundant work, but each run is still whole-program. Syntax errors are instant via Crystal::Parser.
 2. **Cross-file references use regex** — In-document references use AST (accurate), but cross-file search still uses workspace index regex. Parsing every workspace file on each reference request would be too slow.
 
 ## Future Work
 
 Potential improvements if the project continues beyond 1.0:
-
-### High Impact
-- **Incremental diagnostics** — Cache compilation state between runs. Requires Crystal compiler changes for partial re-checking.
 
 ### Medium Impact
 - **Type hierarchy** — `typeHierarchy/supertypes` and `typeHierarchy/subtypes` for inheritance browsing.

@@ -2386,4 +2386,539 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  # ── Phase 5: Integration Tests ──────────────────────────────────────
+
+  describe "Integration: real Crystal project" do
+    it "initializes with a shard.yml project and indexes files" do
+      dir = File.tempname("integration_test")
+      Dir.mkdir_p(File.join(dir, "src"))
+      File.write(File.join(dir, "shard.yml"), <<-YAML
+        name: test-project
+        version: 0.1.0
+        targets:
+          test-project:
+            main: src/test-project.cr
+        crystal: '>= 1.0.0'
+        YAML
+      )
+      File.write(File.join(dir, "src", "test-project.cr"), <<-CR
+        module TestProject
+          VERSION = "0.1.0"
+
+          class Greeter
+            def greet(name : String) : String
+              "Hello, \#{name}!"
+            end
+          end
+
+          def self.run
+            g = Greeter.new
+            puts g.greet("World")
+          end
+        end
+        CR
+      )
+      File.write(File.join(dir, "src", "helper.cr"), <<-CR
+        module TestProject
+          class Helper
+            def assist
+              42
+            end
+          end
+        end
+        CR
+      )
+
+      client = TestClient.new
+      client.send_request(1, "initialize", {
+        processId: 1,
+        rootUri:   Lsp::Crystal::URI.path_to_uri(dir),
+        capabilities: {} of String => String,
+      })
+      resp = client.read_response
+      resp["result"]["capabilities"]["hoverProvider"].should eq(true)
+      resp["result"]["serverInfo"]["name"].should eq("crystal-lsp")
+
+      client.send_notification("initialized")
+      sleep 200.milliseconds # let indexing complete
+
+      # Workspace symbol search should find classes across files
+      client.send_request(2, "workspace/symbol", {query: "Greeter"})
+      resp = client.read_response
+      resp["result"].as_a.any? { |s| s["name"].as_s == "Greeter" }.should be_true
+
+      client.send_request(3, "workspace/symbol", {query: "Helper"})
+      resp = client.read_response
+      resp["result"].as_a.any? { |s| s["name"].as_s == "Helper" }.should be_true
+
+      # Open a document and get symbols
+      uri = Lsp::Crystal::URI.path_to_uri(File.join(dir, "src", "test-project.cr"))
+      content = File.read(File.join(dir, "src", "test-project.cr"))
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: content},
+      })
+      Fiber.yield
+
+      client.send_request(4, "textDocument/documentSymbol", {textDocument: {uri: uri}})
+      resp = client.read_response
+      symbols = resp["result"].as_a
+      names = symbols.map { |s| s["name"].as_s }
+      names.should contain("TestProject")
+
+      # Folding ranges should exist
+      client.send_request(5, "textDocument/foldingRange", {textDocument: {uri: uri}})
+      resp = client.read_response
+      resp["result"].as_a.size.should be > 0
+
+      # Document highlight on a word
+      client.send_request(6, "textDocument/documentHighlight", {
+        textDocument: {uri: uri},
+        position:     {line: 4, character: 8},
+      })
+      resp = client.read_response
+      resp["result"].as_a?.should_not be_nil
+
+      # Clean shutdown
+      client.send_request(99, "shutdown")
+      resp = client.read_response
+      resp["result"].raw.should be_nil
+
+      client.close
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "handles multi-file workspace with cross-references" do
+      dir = File.tempname("multi_ref_test")
+      Dir.mkdir_p(File.join(dir, "src"))
+      File.write(File.join(dir, "shard.yml"), "name: multi-ref\nversion: 0.1.0\n")
+      File.write(File.join(dir, "src", "models.cr"), <<-CR
+        class User
+          property name : String
+          def initialize(@name)
+          end
+        end
+
+        class Team
+          property members : Array(User)
+          def initialize
+            @members = [] of User
+          end
+        end
+        CR
+      )
+      File.write(File.join(dir, "src", "service.cr"), <<-CR
+        class UserService
+          def find_user(name : String) : User?
+            nil
+          end
+
+          def create_team : Team
+            Team.new
+          end
+        end
+        CR
+      )
+
+      client = TestClient.new
+      client.send_request(1, "initialize", {
+        processId: 1,
+        rootUri:   Lsp::Crystal::URI.path_to_uri(dir),
+        capabilities: {} of String => String,
+      })
+      client.read_response
+      client.send_notification("initialized")
+      sleep 200.milliseconds
+
+      # Should find all types across files
+      client.send_request(2, "workspace/symbol", {query: ""})
+      resp = client.read_response
+      names = resp["result"].as_a.map { |s| s["name"].as_s }
+      names.should contain("User")
+      names.should contain("Team")
+      names.should contain("UserService")
+
+      # References for "User" should span both files
+      uri = Lsp::Crystal::URI.path_to_uri(File.join(dir, "src", "models.cr"))
+      content = File.read(File.join(dir, "src", "models.cr"))
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: content},
+      })
+      Fiber.yield
+
+      client.send_request(3, "textDocument/references", {
+        textDocument: {uri: uri},
+        position:     {line: 0, character: 6},
+        context:      {includeDeclaration: true},
+      })
+      resp = client.read_response
+      refs = resp["result"].as_a
+      refs.size.should be > 0
+
+      client.close
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
+
+  # ── Phase 5: Concurrency Stress Tests ───────────────────────────────
+
+  describe "Concurrency: rapid open/edit/close cycles" do
+    it "handles rapid sequential open/edit/close without crashing" do
+      client = TestClient.new
+      client.initialize_server
+
+      10.times do |i|
+        uri = "file:///tmp/stress_#{i}.cr"
+        content = "def method_#{i}\n  #{i}\nend\n"
+
+        # Open
+        client.send_notification("textDocument/didOpen", {
+          textDocument: {uri: uri, languageId: "crystal", version: 1, text: content},
+        })
+
+        # Edit
+        new_content = "def method_#{i}\n  #{i + 100}\nend\n"
+        client.send_notification("textDocument/didChange", {
+          textDocument: {uri: uri, version: 2},
+          contentChanges: [{text: new_content}],
+        })
+
+        # Close
+        client.send_notification("textDocument/didClose", {
+          textDocument: {uri: uri},
+        })
+      end
+
+      Fiber.yield
+      sleep 50.milliseconds
+
+      # Server should still be responsive
+      client.send_request(999, "textDocument/documentSymbol", {
+        textDocument: {uri: "file:///tmp/stress_0.cr"},
+      })
+      resp = client.try_read_response(1.seconds)
+      resp.should_not be_nil
+      resp.not_nil!["id"].should eq(999)
+
+      client.close
+    end
+
+    it "handles concurrent requests on same document" do
+      client = TestClient.new
+      client.initialize_server
+
+      uri = "file:///tmp/concurrent.cr"
+      code = "class Foo\n  def bar\n    42\n  end\n  def baz\n    99\n  end\nend\n"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      # Send multiple requests back-to-back
+      client.send_request(1, "textDocument/documentSymbol", {textDocument: {uri: uri}})
+      client.send_request(2, "textDocument/foldingRange", {textDocument: {uri: uri}})
+      client.send_request(3, "textDocument/documentHighlight", {
+        textDocument: {uri: uri},
+        position:     {line: 1, character: 6},
+      })
+      client.send_request(4, "textDocument/selectionRange", {
+        textDocument: {uri: uri},
+        positions:    [{line: 1, character: 6}],
+      })
+
+      # Read all responses (order may vary)
+      ids = Set(Int64).new
+      4.times do
+        resp = client.try_read_response(2.seconds)
+        resp.should_not be_nil
+        ids << resp.not_nil!["id"].as_i64
+      end
+
+      ids.should contain(1_i64)
+      ids.should contain(2_i64)
+      ids.should contain(3_i64)
+      ids.should contain(4_i64)
+
+      client.close
+    end
+
+    it "handles rapid version bumps without errors" do
+      client = TestClient.new
+      client.initialize_server
+
+      uri = "file:///tmp/versions.cr"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: "x = 1\n"},
+      })
+
+      50.times do |i|
+        client.send_notification("textDocument/didChange", {
+          textDocument:   {uri: uri, version: i + 2},
+          contentChanges: [{text: "x = #{i + 2}\n"}],
+        })
+      end
+
+      Fiber.yield
+      sleep 50.milliseconds
+
+      # Verify server is still healthy
+      client.send_request(1, "textDocument/hover", {
+        textDocument: {uri: uri},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.try_read_response(1.seconds)
+      resp.should_not be_nil
+
+      client.close
+    end
+  end
+
+  # ── Phase 5: Large File Tests ───────────────────────────────────────
+
+  describe "Large file handling" do
+    it "handles document symbols for 10K+ line file" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Generate a large Crystal file with many classes and methods
+      lines = [] of String
+      50.times do |cls_i|
+        lines << "class LargeClass#{cls_i}"
+        200.times do |method_i|
+          lines << "  def method_#{method_i}"
+          lines << "    #{method_i}"
+          lines << "  end"
+        end
+        lines << "end"
+        lines << ""
+      end
+      large_code = lines.join("\n")
+      large_code.lines.size.should be > 10000
+
+      uri = "file:///tmp/large_file.cr"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: large_code},
+      })
+      Fiber.yield
+
+      client.send_request(1, "textDocument/documentSymbol", {textDocument: {uri: uri}})
+      resp = client.try_read_response(5.seconds)
+      resp.should_not be_nil
+      symbols = resp.not_nil!["result"].as_a
+      symbols.size.should be > 0
+
+      # Should find many of our classes
+      class_names = symbols.map { |s| s["name"].as_s }
+      class_names.should contain("LargeClass0")
+      class_names.should contain("LargeClass49")
+
+      client.close
+    end
+
+    it "handles folding ranges for large file" do
+      client = TestClient.new
+      client.initialize_server
+
+      lines = [] of String
+      100.times do |i|
+        lines << "class Block#{i}"
+        lines << "  def work"
+        lines << "    # doing stuff"
+        lines << "  end"
+        lines << "end"
+        lines << ""
+      end
+      code = lines.join("\n")
+
+      uri = "file:///tmp/large_fold.cr"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(1, "textDocument/foldingRange", {textDocument: {uri: uri}})
+      resp = client.try_read_response(5.seconds)
+      resp.should_not be_nil
+      ranges = resp.not_nil!["result"].as_a
+      ranges.size.should be >= 100
+
+      client.close
+    end
+
+    it "handles highlight in large file" do
+      client = TestClient.new
+      client.initialize_server
+
+      lines = [] of String
+      500.times do |i|
+        lines << "value = #{i}"
+      end
+      code = lines.join("\n")
+
+      uri = "file:///tmp/large_hl.cr"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(1, "textDocument/documentHighlight", {
+        textDocument: {uri: uri},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.try_read_response(5.seconds)
+      resp.should_not be_nil
+      highlights = resp.not_nil!["result"].as_a
+      # "value" appears on every line
+      highlights.size.should be > 100
+
+      client.close
+    end
+
+    it "handles completion in large file" do
+      client = TestClient.new
+      client.initialize_server
+
+      lines = ["class BigClass"]
+      200.times do |i|
+        lines << "  def method_#{i}"
+        lines << "    #{i}"
+        lines << "  end"
+      end
+      lines << "end"
+      lines << "x = BigClass.new"
+      lines << "x."
+      code = lines.join("\n")
+
+      uri = "file:///tmp/large_comp.cr"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      last_line = code.lines.size - 1
+      client.send_request(1, "textDocument/completion", {
+        textDocument: {uri: uri},
+        position:     {line: last_line, character: 2},
+      })
+      resp = client.try_read_response(5.seconds)
+      resp.should_not be_nil
+      resp.not_nil!["id"].should eq(1)
+
+      client.close
+    end
+
+    it "handles semantic tokens for large file" do
+      client = TestClient.new
+      client.initialize_server
+
+      lines = [] of String
+      500.times do |i|
+        lines << "def func_#{i}(arg : Int32)"
+        lines << "  arg + #{i}"
+        lines << "end"
+      end
+      code = lines.join("\n")
+
+      uri = "file:///tmp/large_tokens.cr"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(1, "textDocument/semanticTokens/full", {textDocument: {uri: uri}})
+      resp = client.try_read_response(5.seconds)
+      resp.should_not be_nil
+      data = resp.not_nil!["result"]["data"].as_a
+      data.size.should be > 0
+
+      client.close
+    end
+  end
+
+  # ── Phase 5: Structured Logging Tests ───────────────────────────────
+
+  describe "Structured logging" do
+    it "JsonLogBackend outputs valid JSON to IO" do
+      io = IO::Memory.new
+      backend = Lsp::Crystal::JsonLogBackend.new(io: io)
+      entry = ::Log::Entry.new(
+        source: "test",
+        severity: ::Log::Severity::Info,
+        message: "hello world",
+        data: ::Log::Metadata.new,
+        exception: nil,
+      )
+      backend.write(entry)
+      io.rewind
+      output = io.gets_to_end.strip
+      parsed = JSON.parse(output)
+      parsed["level"].as_s.should eq("info")
+      parsed["message"].as_s.should eq("hello world")
+      parsed["source"].as_s.should eq("test")
+      parsed["timestamp"].as_i64.should be > 0
+    end
+
+    it "JsonLogBackend includes exception info" do
+      io = IO::Memory.new
+      backend = Lsp::Crystal::JsonLogBackend.new(io: io)
+      ex = Exception.new("test error")
+      entry = ::Log::Entry.new(
+        source: "test",
+        severity: ::Log::Severity::Error,
+        message: "something failed",
+        data: ::Log::Metadata.new,
+        exception: ex,
+      )
+      backend.write(entry)
+      io.rewind
+      output = io.gets_to_end.strip
+      parsed = JSON.parse(output)
+      parsed["level"].as_s.should eq("error")
+      parsed["exception"].as_s.should eq("test error")
+    end
+  end
+
+  # ── Phase 5: Graceful Shutdown Tests ────────────────────────────────
+
+  describe "Graceful shutdown" do
+    it "shuts down cleanly via LSP shutdown/exit" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Open a document to create some state
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/shutdown_test.cr", languageId: "crystal", version: 1, text: "puts 1\n"},
+      })
+      Fiber.yield
+
+      # Shutdown should succeed
+      client.send_request(1, "shutdown")
+      resp = client.read_response
+      resp["id"].should eq(1)
+      resp["result"].raw.should be_nil
+      client.server.shutdown_requested?.should be_true
+
+      client.close
+    end
+
+    it "server remains responsive after opening many documents then shutting down" do
+      client = TestClient.new
+      client.initialize_server
+
+      5.times do |i|
+        client.send_notification("textDocument/didOpen", {
+          textDocument: {uri: "file:///tmp/sd_#{i}.cr", languageId: "crystal", version: 1, text: "x = #{i}\n"},
+        })
+      end
+      Fiber.yield
+
+      client.send_request(1, "shutdown")
+      resp = client.read_response
+      resp["result"].raw.should be_nil
+
+      client.close
+    end
+  end
 end

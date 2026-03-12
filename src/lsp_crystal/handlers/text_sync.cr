@@ -27,8 +27,9 @@ module Lsp::Crystal::Handlers
       doc = server.document_store.update(uri, version, changes)
       Log.debug { "Changed: #{uri} (v#{version})" }
 
-      # Invalidate AST cache
+      # Invalidate AST cache and tool result cache
       server.ast_cache.invalidate(uri)
+      server.invalidate_tool_cache(uri)
 
       # Cancel any pending idle precompile
       server.cancel_idle_precompile
@@ -80,6 +81,7 @@ module Lsp::Crystal::Handlers
       server.document_store.close(uri)
       server.ast_cache.invalidate(uri)
       server.semantic_token_cache.invalidate(uri)
+      server.invalidate_tool_cache(uri)
       Log.debug { "Closed: #{uri}" }
 
       # Re-index from disk when document is closed

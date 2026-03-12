@@ -9,6 +9,11 @@ module Lsp::Crystal
     property precompile_on_idle : Bool = true
     property diagnostics_min_severity : Int32 = 4
     property diagnostics_suppressed_patterns : Array(String) = [] of String
+    property tool_cache_ttl : Int32 = 60
+    property tool_cache_max_entries : Int32 = 500
+    property macro_expand_enabled : Bool = true
+    property macro_expand_timeout : Int32 = 15
+    property parallel_tool_calls : Bool = true
 
     def initialize
     end
@@ -42,6 +47,23 @@ module Lsp::Crystal
         end
         if patterns = crystal_lsp["diagnosticsSuppressedPatterns"]?.try(&.as_a?)
           @diagnostics_suppressed_patterns = patterns.compact_map(&.as_s?)
+        end
+        if ttl = crystal_lsp["toolCacheTtl"]?.try(&.as_i?)
+          @tool_cache_ttl = ttl.clamp(0, 600)
+        end
+        if max = crystal_lsp["toolCacheMaxEntries"]?.try(&.as_i?)
+          @tool_cache_max_entries = max.clamp(0, 10000)
+        end
+        if crystal_lsp["macroExpandEnabled"]?
+          me = crystal_lsp["macroExpandEnabled"].as_bool?
+          @macro_expand_enabled = me unless me.nil?
+        end
+        if mt = crystal_lsp["macroExpandTimeout"]?.try(&.as_i?)
+          @macro_expand_timeout = mt.clamp(1, 60)
+        end
+        if crystal_lsp["parallelToolCalls"]?
+          pt = crystal_lsp["parallelToolCalls"].as_bool?
+          @parallel_tool_calls = pt unless pt.nil?
         end
       end
     end

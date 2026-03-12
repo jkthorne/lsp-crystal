@@ -16,6 +16,7 @@ module Lsp::Crystal
     getter require_graph : RequireGraph
     getter semantic_token_cache : Providers::SemanticTokens::TokenCache
     getter ast_index : AST::Index
+    getter tool_result_cache : ToolResultCache
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
@@ -41,6 +42,8 @@ module Lsp::Crystal
       @require_graph = RequireGraph.new
       @semantic_token_cache = Providers::SemanticTokens::TokenCache.new
       @ast_index = AST::Index.new
+      @tool_result_cache = ToolResultCache.new
+      @expand_failure_count = Atomic(Int32).new(0)
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new
@@ -242,6 +245,22 @@ module Lsp::Crystal
         token: token,
         value: {kind: "end", message: message},
       })
+    end
+
+    def invalidate_tool_cache(uri : String) : Nil
+      @tool_result_cache.invalidate_uri(uri)
+    end
+
+    def macro_expand_available? : Bool
+      @configuration.macro_expand_enabled && @expand_failure_count.get < 3
+    end
+
+    def record_expand_failure : Nil
+      @expand_failure_count.add(1)
+    end
+
+    def reset_expand_failures : Nil
+      @expand_failure_count.set(0)
     end
 
     def cancel_idle_precompile : Nil

@@ -5552,4 +5552,96 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Diagnostic pull model" do
+    it "advertises diagnosticProvider in capabilities" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      response = client.read_response
+      capabilities = response["result"]["capabilities"]
+      capabilities["diagnosticProvider"].should_not be_nil
+      capabilities["diagnosticProvider"]["interFileDependencies"].as_bool.should be_true
+      capabilities["diagnosticProvider"]["workspaceDiagnostics"].as_bool.should be_false
+    ensure
+      client.try(&.close)
+    end
+
+    it "returns full report with syntax diagnostics for open document" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/diag_pull.cr", languageId: "crystal", version: 1, text: "def foo\n  1 +\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(60, "textDocument/diagnostic", {
+        textDocument: {uri: "file:///tmp/diag_pull.cr"},
+      })
+      resp = client.read_response
+      resp["id"].should eq(60)
+      result = resp["result"]
+      result["kind"].as_s.should eq("full")
+      result["items"].as_a.should be_a(Array(JSON::Any))
+    ensure
+      client.try(&.close)
+    end
+
+    it "returns empty diagnostics for valid code" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/diag_valid.cr", languageId: "crystal", version: 1, text: "puts \"hello\"\n"},
+      })
+      Fiber.yield
+
+      client.send_request(61, "textDocument/diagnostic", {
+        textDocument: {uri: "file:///tmp/diag_valid.cr"},
+      })
+      resp = client.read_response
+      resp["id"].should eq(61)
+      result = resp["result"]
+      result["kind"].as_s.should eq("full")
+      result["items"].as_a.size.should eq(0)
+    ensure
+      client.try(&.close)
+    end
+
+    it "returns full report for unknown document" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(62, "textDocument/diagnostic", {
+        textDocument: {uri: "file:///tmp/nonexistent.cr"},
+      })
+      resp = client.read_response
+      resp["id"].should eq(62)
+      result = resp["result"]
+      result["kind"].as_s.should eq("full")
+      result["items"].as_a.size.should eq(0)
+    ensure
+      client.try(&.close)
+    end
+
+    it "returns syntax errors for malformed code" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/diag_syntax.cr", languageId: "crystal", version: 1, text: "def foo(\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(63, "textDocument/diagnostic", {
+        textDocument: {uri: "file:///tmp/diag_syntax.cr"},
+      })
+      resp = client.read_response
+      resp["id"].should eq(63)
+      result = resp["result"]
+      result["kind"].as_s.should eq("full")
+      result["items"].as_a.size.should be > 0
+    ensure
+      client.try(&.close)
+    end
+  end
 end

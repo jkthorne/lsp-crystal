@@ -184,6 +184,9 @@ module Lsp::Crystal
       # File watching
       @handlers["workspace/didChangeWatchedFiles"] = Handler.new { |server, msg| Handlers::DidChangeWatchedFiles.handle(server, msg) }
 
+      # Diagnostic pull model
+      @handlers["textDocument/diagnostic"] = Handler.new { |server, msg| Handlers::Diagnostic.handle(server, msg) }
+
       # Macro expand command
       @handlers["workspace/executeCommand"] = Handler.new { |server, msg| Handlers::ExecuteCommand.handle(server, msg) }
     end

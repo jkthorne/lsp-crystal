@@ -51,6 +51,10 @@ module Lsp::Crystal::Handlers
           linkedEditingRangeProvider: true,
           typeHierarchyProvider:     true,
           executeCommandProvider:    {commands: ["crystal-lsp/expandMacro"]},
+          diagnosticProvider:       {
+            interFileDependencies: true,
+            workspaceDiagnostics:  false,
+          },
         },
         serverInfo: {
           name:    "crystal-lsp",

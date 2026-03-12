@@ -131,7 +131,7 @@ module Lsp::Crystal
       end
     end
 
-    private def filter_diagnostics(diagnostics : Array(Providers::Diagnostics::Diagnostic)) : Array(Providers::Diagnostics::Diagnostic)
+    def filter_diagnostics(diagnostics : Array(Providers::Diagnostics::Diagnostic)) : Array(Providers::Diagnostics::Diagnostic)
       min_sev = @configuration.diagnostics_min_severity
       patterns = @configuration.diagnostics_suppressed_patterns
       return diagnostics if min_sev >= 4 && patterns.empty?
@@ -155,6 +155,13 @@ module Lsp::Crystal
         uri:         uri,
         diagnostics: diagnostics,
       })
+    end
+
+    # Returns cached diagnostics and a result_id (hex hash) for the diagnostic pull model
+    def get_cached_diagnostics(uri : String) : {Array(Providers::Diagnostics::Diagnostic)?, String?}
+      diagnostics = @published_diagnostics_mutex.synchronize { @published_diagnostics[uri]?.try(&.dup) }
+      result_id = @diagnostics_hashes_mutex.synchronize { @diagnostics_hashes[uri]? }
+      {diagnostics, result_id.try(&.to_s(16))}
     end
 
     def clear_published_diagnostics(uri : String) : Nil

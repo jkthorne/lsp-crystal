@@ -143,15 +143,15 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 ## Known Limitations
 
-1. **No incremental compilation** — Each full diagnostic runs `crystal build --no-codegen` on the whole program. Content-hash caching, diagnostic diffing, and require-graph targeting reduce redundant work, but each invocation is still whole-program. Syntax errors are instant via `Crystal::Parser`.
+1. **No incremental compilation** — Each full diagnostic runs `crystal build --no-codegen` on the entire program. Content-hash caching, diagnostic diffing, and require-graph targeting reduce redundant work, but each invocation is whole-program. Syntax errors are instant via `Crystal::Parser`.
 
-2. **Cross-file references partially AST-based** — Cross-file references now use the persistent AST index for accurate results, with regex fallback when the index is not ready or for files that fail to parse. Complex overloaded methods may still require `crystal tool` for full resolution.
+2. **Cross-file references partially AST-based** — The persistent AST index handles most cross-file lookups with regex fallback for unparseable files. Complex overloaded methods may still need `crystal tool` for full resolution.
 
-3. **Macro expansion is two-tier** — Tier 1: Common macros (`property`, `getter`, `setter`, `record`) are expanded instantly via pattern matching. Tier 2: Arbitrary user-defined macros are expanded via `crystal tool expand` with result caching (non-blocking, background). Tier 2 requires a compilable project and adds latency on first hover; subsequent hovers serve from cache. Auto-disables after 3 consecutive failures.
+3. **Two-tier macro expansion** — Tier 1 expands common macros (`property`, `getter`, `setter`, `record`) instantly via pattern matching. Tier 2 uses `crystal tool expand` with LRU caching (non-blocking, background). Tier 2 requires a compilable project, adds latency on first hover, and auto-disables after 3 consecutive failures.
 
-4. **Single-project scope** — The server assumes one Crystal project per workspace root (detected via `shard.yml`). Multi-root workspaces with independent shards are not fully supported.
+4. **Single-project scope** — Assumes one Crystal project per workspace root (detected via `shard.yml`). Multi-root workspaces with independent shards are unsupported.
 
-5. **No type inference without compiler** — Type information comes from `crystal tool context` which requires a full compiler pass. The AST subsystem provides syntax-level intelligence but cannot infer types independently.
+5. **No standalone type inference** — Type information comes from `crystal tool context` which requires a full compiler pass. The AST subsystem provides syntax-level intelligence but cannot infer types independently.
 
 ---
 
@@ -159,37 +159,29 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 ### High Impact
 
-**~~Macro expansion Tier 2~~ (done)** — Implemented via `crystal tool expand` with LRU caching, non-blocking background expansion, and auto-disable on failure. Expanded symbols are indexed into the AST index.
+**Completion resolve** — Implement `completionItem/resolve` to lazy-load documentation and detail. Currently all completion info is computed upfront. Resolve would speed up the initial list, especially for large projects.
 
-**~~Compiler acceleration~~ (done)** — Tool result cache (LRU, 500 entries, 60s TTL), request coalescing for concurrent identical invocations, and parallel hover dispatch. Crystal has no daemon mode, so true incremental compilation isn't possible, but these optimizations eliminate redundant work.
+**Diagnostic pull model** — Implement LSP 3.17 `textDocument/diagnostic` pull model alongside push. Gives editors more control over when to request diagnostics, reducing unnecessary computation.
 
 ### Medium Impact
 
-**Completion resolve**
-Implement `completionItem/resolve` to lazy-load documentation and detail for completion items. Currently all completion info is computed upfront. Resolve would speed up the initial completion list, especially for large projects.
+**Range and on-type formatting** — Extend `documentFormattingProvider` to also support `documentRangeFormattingProvider` and `documentOnTypeFormattingProvider`. On-type could handle `end` insertion, auto-indent after `do`/`{`, and auto-close `#{}`.
 
-**Diagnostic pull model**
-Implement LSP 3.17 `textDocument/diagnostic` pull model alongside the current push model. Pull diagnostics give editors more control over when to request diagnostics and can reduce unnecessary computation.
+**Snippet completions** — Add snippet-based completions for Crystal idioms: `spec describe/it` blocks, `JSON::Serializable` boilerplate, `property`/`getter`/`setter` with types, error handling patterns.
 
-**Smarter on-type formatting**
-Extend on-type formatting beyond `end` insertion: auto-indent after `do`/`{`, auto-close string interpolation `#{}`, auto-indent `when` in case statements.
-
-**Snippet completions for common patterns**
-Add snippet-based completions for Crystal idioms: `spec describe/it` blocks, `JSON::Serializable` boilerplate, `property`/`getter`/`setter` with types, error handling patterns.
+**Code lens resolve** — Implement `codeLens/resolve` for lazy computation of reference counts, improving responsiveness on large files.
 
 ### Low Impact / Exploratory
 
-**Debug Adapter Protocol (DAP)**
-Crystal has limited debugging support, but a basic DAP implementation could provide breakpoints and variable inspection if Crystal gains better debug info in future releases.
+**Test discovery and execution** — Detect `spec/**/*_spec.cr` files, extract `describe`/`it` blocks, expose via code lens or custom LSP extension for in-editor test running.
 
-**Test discovery and execution**
-Detect `spec/**/*_spec.cr` files, extract `describe`/`it` blocks, and expose them via code lens or a custom LSP extension for in-editor test running.
+**Goto declaration** — Implement `textDocument/declaration` as distinct from definition, pointing to forward declarations or abstract method signatures.
 
-**Workspace symbol resolve**
-Implement `workspaceSymbol/resolve` to lazy-load location details for workspace symbol search results.
+**Document links** — Detect `require` paths and make them clickable via `textDocument/documentLink`.
 
-**Goto declaration**
-Implement `textDocument/declaration` as distinct from definition, pointing to forward declarations or abstract method signatures.
+**Workspace symbol resolve** — Implement `workspaceSymbol/resolve` to lazy-load location details.
+
+**Debug Adapter Protocol** — Crystal has limited debugging support, but a basic DAP implementation could provide breakpoints and variable inspection if Crystal gains better debug info.
 
 ---
 

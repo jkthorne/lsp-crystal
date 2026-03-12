@@ -26,6 +26,8 @@ module Lsp::Crystal
     @last_diagnostics_files_mutex : Mutex
     @active_uri : String?
     @next_request_id : Atomic(Int64)
+    @idle_timer : Time::Instant?
+    @idle_cancel : CancellationToken?
 
     def initialize(@transport : Transport::Stdio = Transport::Stdio.new)
       @document_store = DocumentStore.new
@@ -222,6 +224,40 @@ module Lsp::Crystal
       })
     end
 
+    def cancel_idle_precompile : Nil
+      @idle_cancel.try(&.cancel)
+      @idle_cancel = nil
+      @idle_timer = nil
+    end
+
+    private def schedule_idle_precompile : Nil
+      return unless @configuration.precompile_on_idle
+      return unless main = @main_file
+      @idle_timer = Time.instant + 5.seconds
+      # Only spawn if not already waiting
+      return if @idle_cancel
+      token = CancellationToken.new
+      @idle_cancel = token
+      spawn do
+        loop do
+          sleep 1.second
+          break if token.cancelled?
+          timer = @idle_timer
+          next unless timer
+          next if Time.instant < timer
+          break if token.cancelled?
+          Log.debug { "Idle precompile: warming cache with #{main}" }
+          begin
+            CrystalTool.check(main)
+          rescue
+          end
+          @idle_cancel = nil
+          @idle_timer = nil
+          break
+        end
+      end
+    end
+
     private def install_signal_handlers
       Signal::TERM.trap do
         Log.info { "Received SIGTERM" }
@@ -268,6 +304,9 @@ module Lsp::Crystal
             next if Time.instant < scheduled_at
             run_diagnostics(pending_uri)
           end
+
+          # Schedule idle precompile after diagnostics complete
+          schedule_idle_precompile
         rescue Channel::ClosedError
           break
         rescue ex

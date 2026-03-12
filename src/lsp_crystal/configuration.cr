@@ -6,6 +6,7 @@ module Lsp::Crystal
     property inlay_hints_enabled : Bool = true
     property code_lens_enabled : Bool = true
     property semantic_tokens_enabled : Bool = true
+    property precompile_on_idle : Bool = true
 
     def initialize
     end
@@ -29,6 +30,10 @@ module Lsp::Crystal
         end
         if st = crystal_lsp["semanticTokens"]?.try(&.as_bool?)
           @semantic_tokens_enabled = st
+        end
+        if crystal_lsp["precompileOnIdle"]?
+          poi = crystal_lsp["precompileOnIdle"].as_bool?
+          @precompile_on_idle = poi unless poi.nil?
         end
       end
     end

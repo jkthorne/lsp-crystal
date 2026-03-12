@@ -30,6 +30,9 @@ module Lsp::Crystal::Handlers
       # Invalidate AST cache
       server.ast_cache.invalidate(uri)
 
+      # Cancel any pending idle precompile
+      server.cancel_idle_precompile
+
       # Update workspace index with latest content
       if doc
         server.workspace_index.invalidate_content(doc.path, doc.content)

@@ -86,7 +86,28 @@ module Lsp::Crystal::Providers
     BLOCK_OPEN_REGEX = /^\s*(?:class|struct|module|enum|def|macro|if|unless|case|while|until|begin|do|for|lib|fun|annotation)\b/
 
     # Returns hierarchical document symbols with nesting
-    def self.run(document : Document) : Array(HierarchicalSymbolInfo)
+    # Tries AST path first, falls back to regex
+    def self.run(document : Document, ast_cache : AST::Cache? = nil) : Array(HierarchicalSymbolInfo)
+      if cache = ast_cache
+        result = cache.get(document)
+        if result && result.success? && (node = result.node)
+          return run_ast(node)
+        end
+      end
+      run_regex(document)
+    end
+
+    # AST-based symbol extraction
+    def self.run_ast(node : ::Crystal::ASTNode) : Array(HierarchicalSymbolInfo)
+      visitor = AST::SymbolVisitor.new
+      node.accept(visitor)
+      visitor.root_symbols
+    rescue
+      [] of HierarchicalSymbolInfo
+    end
+
+    # Regex-based symbol extraction (fallback)
+    def self.run_regex(document : Document) : Array(HierarchicalSymbolInfo)
       root_symbols = [] of HierarchicalSymbolInfo
       # scope_stack tracks container symbols for nesting children
       scope_stack = [] of HierarchicalSymbolInfo

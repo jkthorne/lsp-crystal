@@ -15,7 +15,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, cached)
       end
 
-      symbols = Providers::DocumentSymbol.run(doc)
+      symbols = Providers::DocumentSymbol.run(doc, server.ast_cache)
       flat = Providers::DocumentSymbol.run_flat(doc)
       doc.cache_symbols(symbols, flat)
       JSONRPC::Response.success(id, symbols)

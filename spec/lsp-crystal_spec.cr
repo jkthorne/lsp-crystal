@@ -2261,4 +2261,63 @@ describe Lsp::Crystal do
       FileUtils.rm_rf(dir) if dir
     end
   end
+
+  describe "Providers::CodeAction extract variable" do
+    it "offers extract variable for expression selection" do
+      code = "puts 1 + 2 * 3\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 5),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 14)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.any? { |a| a.title == "Extract variable" }.should be_true
+    end
+
+    it "does not offer extract variable for simple word" do
+      code = "puts hello\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 5),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 10)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.any? { |a| a.title == "Extract variable" }.should be_false
+    end
+
+    it "does not offer extract variable for empty selection" do
+      code = "x = 1\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 0)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.any? { |a| a.title == "Extract variable" }.should be_false
+    end
+  end
+
+  describe "Providers::CodeAction extract method" do
+    it "offers extract method for multi-line selection" do
+      code = "def foo\n  x = 1\n  y = 2\n  z = x + y\n  puts z\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 1, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 3, character: 11)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.any? { |a| a.title == "Extract method" }.should be_true
+    end
+
+    it "does not offer extract method for single line" do
+      code = "x = 1\ny = 2\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 5)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.any? { |a| a.title == "Extract method" }.should be_false
+    end
+  end
 end

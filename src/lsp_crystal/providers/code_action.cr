@@ -4,6 +4,8 @@ module Lsp::Crystal::Providers
     QUICK_FIX     = "quickfix"
     SOURCE        = "source"
     SOURCE_ORGANIZE_IMPORTS = "source.organizeImports"
+    REFACTOR         = "refactor"
+    REFACTOR_EXTRACT = "refactor.extract"
 
     def self.run(document : Document, range : Range, diagnostics : Array(JSON::Any)?) : Array(Lsp::Crystal::CodeAction)
       actions = [] of Lsp::Crystal::CodeAction
@@ -22,6 +24,16 @@ module Lsp::Crystal::Providers
 
       # Source action: organize requires (sort)
       if action = organize_requires(document)
+        actions << action
+      end
+
+      # Refactoring: extract variable (when a non-trivial expression is selected on a single line)
+      if action = extract_variable(document, range)
+        actions << action
+      end
+
+      # Refactoring: extract method (when multiple lines are selected)
+      if action = extract_method(document, range)
         actions << action
       end
 
@@ -53,6 +65,149 @@ module Lsp::Crystal::Providers
       end
 
       nil
+    end
+
+    private def self.extract_variable(document : Document, range : Range) : Lsp::Crystal::CodeAction?
+      # Only for single-line selections with content
+      return nil unless range.start.line == range.end_pos.line
+      return nil if range.start.character == range.end_pos.character
+
+      line_text = document.line_at(range.start.line)
+      return nil unless line_text
+
+      selected = line_text[range.start.character...range.end_pos.character]?
+      return nil unless selected && !selected.empty?
+
+      # Skip if selection is just whitespace or a simple variable name
+      return nil if selected.strip.empty?
+      return nil if selected =~ /^\w+$/
+
+      # Determine indentation of the current line
+      indent = ""
+      line_text.each_char do |c|
+        break unless c == ' ' || c == '\t'
+        indent += c.to_s
+      end
+
+      var_name = "extracted"
+      declaration = "#{indent}#{var_name} = #{selected}\n"
+
+      edits = [
+        # Insert the variable declaration above the current line
+        TextEdit.new(
+          range: Range.new(
+            start: Position.new(line: range.start.line, character: 0),
+            end_pos: Position.new(line: range.start.line, character: 0)
+          ),
+          new_text: declaration
+        ),
+        # Replace the selected expression with the variable name
+        TextEdit.new(
+          range: Range.new(
+            start: Position.new(line: range.start.line + 1, character: range.start.character),
+            end_pos: Position.new(line: range.end_pos.line + 1, character: range.end_pos.character)
+          ),
+          new_text: var_name
+        ),
+      ]
+
+      changes = Hash(String, Array(TextEdit)).new
+      changes[document.uri] = edits
+      edit = WorkspaceEdit.new(changes)
+
+      Lsp::Crystal::CodeAction.new(
+        title: "Extract variable",
+        kind: REFACTOR_EXTRACT,
+        edit: edit
+      )
+    end
+
+    private def self.extract_method(document : Document, range : Range) : Lsp::Crystal::CodeAction?
+      # Only for multi-line selections (at least 2 code lines)
+      return nil if range.start.line == range.end_pos.line
+      return nil if range.end_pos.line - range.start.line < 2
+
+      lines = document.content.lines
+      return nil if range.start.line >= lines.size
+
+      # Don't offer extract method if the selection spans most of the document
+      return nil if range.start.line == 0 && range.end_pos.line >= lines.size - 1
+
+      # Collect selected lines
+      selected_lines = [] of String
+      (range.start.line..Math.min(range.end_pos.line, lines.size - 1)).each do |i|
+        selected_lines << lines[i]
+      end
+      return nil if selected_lines.empty?
+
+      # Determine the indentation of the first selected line
+      first_line = selected_lines.first
+      indent = ""
+      first_line.each_char do |c|
+        break unless c == ' ' || c == '\t'
+        indent += c.to_s
+      end
+
+      # Find the enclosing method/class end to insert the new method after
+      method_body = selected_lines.map { |l|
+        # Re-indent the body with standard 2-space indent
+        stripped = l.strip
+        stripped.empty? ? "" : "    #{stripped}"
+      }.join("\n")
+
+      method_name = "extracted_method"
+      new_method = "\n#{indent}private def #{method_name}\n#{method_body}\n#{indent}end\n"
+
+      # Build edits: replace selection with method call, insert method after enclosing block
+      insert_line = find_method_insert_point(lines, range.end_pos.line)
+
+      edits = [
+        # Replace selected lines with method call
+        TextEdit.new(
+          range: Range.new(
+            start: Position.new(line: range.start.line, character: 0),
+            end_pos: Position.new(line: range.end_pos.line, character: lines[Math.min(range.end_pos.line, lines.size - 1)].size)
+          ),
+          new_text: "#{indent}  #{method_name}"
+        ),
+        # Insert new method definition
+        TextEdit.new(
+          range: Range.new(
+            start: Position.new(line: insert_line, character: lines[Math.min(insert_line, lines.size - 1)]?.try(&.size) || 0),
+            end_pos: Position.new(line: insert_line, character: lines[Math.min(insert_line, lines.size - 1)]?.try(&.size) || 0)
+          ),
+          new_text: new_method
+        ),
+      ]
+
+      changes = Hash(String, Array(TextEdit)).new
+      changes[document.uri] = edits
+      edit = WorkspaceEdit.new(changes)
+
+      Lsp::Crystal::CodeAction.new(
+        title: "Extract method",
+        kind: REFACTOR_EXTRACT,
+        edit: edit
+      )
+    end
+
+    # Find a good insertion point for a new method (after the enclosing method's end)
+    private def self.find_method_insert_point(lines : Array(String), from_line : Int32) : Int32
+      depth = 0
+      (from_line...lines.size).each do |i|
+        stripped = lines[i].strip
+        if stripped =~ /^\s*(?:def|class|struct|module)\b/
+          depth += 1
+        end
+        if stripped =~ /^\s*end\b/
+          if depth > 0
+            depth -= 1
+          else
+            return i
+          end
+        end
+      end
+      lines.size - 1
     end
 
     private def self.organize_requires(document : Document) : Lsp::Crystal::CodeAction?

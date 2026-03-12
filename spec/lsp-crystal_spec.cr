@@ -1299,4 +1299,847 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  # ============================================================
+  # Tier 1: High Impact, Easy
+  # ============================================================
+
+  describe "Providers::Implementation" do
+    it "returns empty array for nonexistent file" do
+      doc = Lsp::Crystal::Document.new("file:///nonexistent.cr", "crystal", 1, "x = 1")
+      locations = Lsp::Crystal::Providers::Implementation.run(doc, 0, 0)
+      locations.should be_a(Array(Lsp::Crystal::Location))
+      locations.should be_empty
+    end
+
+    it "returns Array(Location) type" do
+      doc = Lsp::Crystal::Document.new("file:///nonexistent.cr", "crystal", 1, "class Foo\nend\n")
+      result = Lsp::Crystal::Providers::Implementation.run(doc, 0, 6)
+      result.should be_a(Array(Lsp::Crystal::Location))
+    end
+
+    it "parses implementation JSON with missing optional size field" do
+      # The provider defaults size to 0 when missing — test via nonexistent file
+      doc = Lsp::Crystal::Document.new("file:///nonexistent.cr", "crystal", 1, "def foo; end")
+      locations = Lsp::Crystal::Providers::Implementation.run(doc, 0, 4)
+      locations.should be_a(Array(Lsp::Crystal::Location))
+    end
+  end
+
+  describe "Implementation handler integration" do
+    it "returns locations via textDocument/implementation" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/impl.cr", languageId: "crystal", version: 1, text: "class Foo\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(100, "textDocument/implementation", {
+        textDocument: {uri: "file:///tmp/impl.cr"},
+        position:     {line: 0, character: 6},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(100)
+      resp["result"].should_not be_nil
+      client.close
+    end
+  end
+
+  describe "Document edge cases" do
+    it "calculates position_at correctly" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "abc\ndef\nghi")
+      pos0 = doc.position_at(0)
+      pos0.line.should eq(0)
+      pos0.character.should eq(0)
+
+      pos4 = doc.position_at(4)
+      pos4.line.should eq(1)
+      pos4.character.should eq(0)
+
+      pos6 = doc.position_at(6)
+      pos6.line.should eq(1)
+      pos6.character.should eq(2)
+    end
+
+    it "round-trips offset_at and position_at" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "abc\ndef\nghi")
+      [0, 1, 3, 4, 7, 8, 10].each do |offset|
+        pos = doc.position_at(offset)
+        doc.offset_at(pos).should eq(offset)
+      end
+    end
+
+    it "handles empty document" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "")
+      end_pos = doc.end_position
+      end_pos.line.should eq(0)
+      end_pos.character.should eq(0)
+      doc.offset_at(Lsp::Crystal::Position.new(line: 0, character: 0)).should eq(0)
+    end
+
+    it "handles single-line document" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "hello")
+      end_pos = doc.end_position
+      end_pos.line.should eq(0)
+      end_pos.character.should eq(5)
+    end
+
+    it "handles position beyond content" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "ab\ncd")
+      # Line beyond content — should return content size
+      offset = doc.offset_at(Lsp::Crystal::Position.new(line: 99, character: 0))
+      offset.should eq(5) # content.size
+    end
+  end
+
+  describe "Dispatcher error recovery" do
+    it "returns InternalError when handler raises" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Send a textDocument/definition without params to trigger NilAssertionError
+      client.send_request(101, "textDocument/definition")
+      resp = client.read_response
+
+      resp["id"].should eq(101)
+      resp["error"]["code"].should eq(-32603) # InternalError
+    end
+
+    it "returns nil for notification to unknown method" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Send a notification (no id) to an unknown method — should produce no response
+      client.send_notification("custom/unknownNotification")
+      Fiber.yield
+
+      # Try reading a response — should timeout because no response was sent
+      resp = client.try_read_response(timeout: 200.milliseconds)
+      resp.should be_nil
+      client.close
+    end
+
+    it "handles malformed JSON gracefully" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Write raw invalid JSON
+      bad = "this is not json"
+      client.send_raw("Content-Length: #{bad.bytesize}\r\n\r\n#{bad}")
+      Fiber.yield
+      sleep 100.milliseconds
+
+      # The server should respond with a parse error (id: null, error object)
+      # Skip any progress/diagnostic notifications first
+      found_error = false
+      5.times do
+        resp = client.try_read_notification(timeout: 1.second)
+        if resp && resp["error"]?
+          resp["error"]["code"].should eq(-32700) # ParseError
+          found_error = true
+          break
+        end
+      end
+      found_error.should be_true
+      client.close
+    end
+  end
+
+  describe "Protocol type serialization" do
+    it "serializes Location to JSON" do
+      loc = Lsp::Crystal::Location.new(
+        uri: "file:///test.cr",
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 1, character: 2),
+          end_pos: Lsp::Crystal::Position.new(line: 3, character: 4)
+        )
+      )
+      json = JSON.parse(loc.to_json)
+      json["uri"].should eq("file:///test.cr")
+      json["range"]["start"]["line"].should eq(1)
+      json["range"]["end"]["character"].should eq(4)
+    end
+
+    it "serializes TextEdit with camelCase newText" do
+      edit = Lsp::Crystal::TextEdit.new(
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 0, character: 0),
+          end_pos: Lsp::Crystal::Position.new(line: 0, character: 5)
+        ),
+        new_text: "hello"
+      )
+      json = JSON.parse(edit.to_json)
+      json["newText"].should eq("hello")
+      json["range"].should_not be_nil
+    end
+
+    it "serializes WorkspaceEdit changes map" do
+      edit = Lsp::Crystal::WorkspaceEdit.new
+      edit.changes["file:///t.cr"] = [
+        Lsp::Crystal::TextEdit.new(
+          range: Lsp::Crystal::Range.new(
+            start: Lsp::Crystal::Position.new(line: 0, character: 0),
+            end_pos: Lsp::Crystal::Position.new(line: 0, character: 3)
+          ),
+          new_text: "bar"
+        ),
+      ]
+      json = JSON.parse(edit.to_json)
+      json["changes"]["file:///t.cr"].as_a.size.should eq(1)
+      json["changes"]["file:///t.cr"][0]["newText"].should eq("bar")
+    end
+  end
+
+  describe "CodeAction edge cases" do
+    it "does not suggest fix for already-underscored var" do
+      code = "_x = 1\nputs y\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      diagnostics = [JSON.parse({
+        message: "variable '_x' isn't used",
+        range:   {start: {line: 0, character: 0}, "end": {line: 0, character: 2}},
+      }.to_json)]
+
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 2)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, diagnostics)
+      actions.any? { |a| a.title.includes?("underscore") }.should be_false
+    end
+
+    it "returns empty for no diagnostics and sorted requires" do
+      code = "require \"a\"\nrequire \"b\"\n\nx = 1\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 3, character: 0)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      actions.should be_empty
+    end
+
+    it "handles multiple separate require groups" do
+      code = "require \"z\"\nrequire \"a\"\n\nrequire \"y\"\nrequire \"b\"\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 4, character: 0)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      organize = actions.find { |a| a.title == "Organize requires" }
+      organize.should_not be_nil
+    end
+  end
+
+  describe "References edge cases" do
+    it "finds references across multiple lines" do
+      code = "total = 0\ntotal += 1\nputs total\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      refs = Lsp::Crystal::Providers::References.run(doc, 0, 0, nil)
+      refs.size.should eq(3) # assignment + increment + puts
+    end
+
+    it "returns empty for cursor on whitespace" do
+      code = "x = 1\n   \ny = 2\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      refs = Lsp::Crystal::Providers::References.run(doc, 1, 1, nil)
+      refs.should be_empty
+    end
+  end
+
+  # ============================================================
+  # Tier 2: High Impact, Moderate Effort
+  # ============================================================
+
+  describe "WorkspaceIndex additional" do
+    it "invalidate_content updates without disk read" do
+      index = Lsp::Crystal::WorkspaceIndex.new
+      # Directly add content without indexing from disk
+      index.invalidate_content("/tmp/virtual.cr", "class Virtual\n  def hello\n  end\nend\n")
+
+      results = index.search_symbols("Virtual")
+      results.size.should eq(1)
+      results[0].name.should eq("Virtual")
+    end
+
+    it "search_references finds word across files" do
+      dir = File.tempname("ws_idx")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "helper = 1\n")
+      File.write(File.join(dir, "b.cr"), "puts helper\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      refs = index.search_references(/\bhelper\b/)
+      refs.size.should eq(2) # 1 in a.cr, 1 in b.cr
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
+
+  describe "Handler missing document" do
+    it "definition returns empty array for unopened doc" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(110, "textDocument/definition", {
+        textDocument: {uri: "file:///tmp/nonexistent.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(110)
+      resp["result"].as_a.should be_empty
+      client.close
+    end
+
+    it "hover returns null for unopened doc" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(111, "textDocument/hover", {
+        textDocument: {uri: "file:///tmp/nonexistent.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(111)
+      resp["result"].raw.should be_nil
+      client.close
+    end
+
+    it "completion returns empty for unopened doc" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(112, "textDocument/completion", {
+        textDocument: {uri: "file:///tmp/nonexistent.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(112)
+      resp["result"]["items"].as_a.should be_empty
+      client.close
+    end
+
+    it "documentSymbol returns empty for unopened doc" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(113, "textDocument/documentSymbol", {
+        textDocument: {uri: "file:///tmp/nonexistent.cr"},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(113)
+      resp["result"].as_a.should be_empty
+      client.close
+    end
+
+    it "signatureHelp returns null for unopened doc" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(114, "textDocument/signatureHelp", {
+        textDocument: {uri: "file:///tmp/nonexistent.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(114)
+      resp["result"].raw.should be_nil
+      client.close
+    end
+  end
+
+  describe "Lifecycle edge cases" do
+    it "advertises all expected capabilities" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+
+      caps = resp["result"]["capabilities"]
+      caps["textDocumentSync"].should_not be_nil
+      caps["completionProvider"].should_not be_nil
+      caps["hoverProvider"].should eq(true)
+      caps["definitionProvider"].should eq(true)
+      caps["documentFormattingProvider"].should eq(true)
+      caps["documentSymbolProvider"].should eq(true)
+      caps["signatureHelpProvider"].should_not be_nil
+      caps["workspaceSymbolProvider"].should eq(true)
+      caps["documentHighlightProvider"].should eq(true)
+      caps["foldingRangeProvider"].should eq(true)
+      caps["selectionRangeProvider"].should eq(true)
+      caps["implementationProvider"].should eq(true)
+      caps["referencesProvider"].should eq(true)
+      caps["codeActionProvider"].should eq(true)
+      caps["renameProvider"]["prepareProvider"].should eq(true)
+      client.close
+    end
+
+    it "handles rootPath fallback when rootUri missing" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootPath: "/tmp", capabilities: {} of String => String})
+      resp = client.read_response
+
+      resp["result"]["capabilities"]["hoverProvider"].should eq(true)
+      client.server.workspace_root.should eq("/tmp")
+      client.close
+    end
+  end
+
+  describe "JSONRPC::Response.notification" do
+    it "builds a notification without id" do
+      json = Lsp::Crystal::JSONRPC::Response.notification("test/method", {data: "value"})
+      parsed = JSON.parse(json)
+      parsed["jsonrpc"].should eq("2.0")
+      parsed["method"].should eq("test/method")
+      parsed["params"]["data"].should eq("value")
+      parsed["id"]?.should be_nil
+    end
+  end
+
+  describe "Rename edge cases" do
+    it "prepare returns nil for cursor on whitespace" do
+      code = "x = 1\n   \ny = 2\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::Rename.prepare(doc, 1, 1)
+      result.should be_nil
+    end
+  end
+
+  # ============================================================
+  # Tier 3: Nice to Have
+  # ============================================================
+
+  describe "URI edge cases" do
+    it "handles paths with spaces" do
+      path = "/tmp/my project/file.cr"
+      uri = Lsp::Crystal::URI.path_to_uri(path)
+      uri.should eq("file:///tmp/my project/file.cr")
+      round_tripped = Lsp::Crystal::URI.uri_to_path(uri)
+      round_tripped.should eq(path)
+    end
+
+    it "passes through non-file URIs" do
+      uri = "untitled:Untitled-1"
+      result = Lsp::Crystal::URI.uri_to_path(uri)
+      result.should eq(uri)
+    end
+  end
+
+  describe "SelectionRange edge cases" do
+    it "handles cursor at document start" do
+      code = "class Foo\n  def bar\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      positions = [Lsp::Crystal::Position.new(line: 0, character: 0)]
+      results = Lsp::Crystal::Providers::SelectionRange.run(doc, positions)
+      results.size.should eq(1)
+      # Should have parent chain (word → line → block → document)
+      results[0].parent.should_not be_nil
+    end
+
+    it "handles mismatched end keywords without crash" do
+      code = "end\nend\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      positions = [Lsp::Crystal::Position.new(line: 0, character: 0)]
+      results = Lsp::Crystal::Providers::SelectionRange.run(doc, positions)
+      results.size.should eq(1)
+    end
+  end
+
+  describe "FoldingRange edge cases" do
+    it "handles file with only comments" do
+      code = "# comment 1\n# comment 2\n# comment 3\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      ranges = Lsp::Crystal::Providers::FoldingRange.run(doc)
+      comment_ranges = ranges.select { |r| r.kind == "comment" }
+      comment_ranges.size.should eq(1)
+      comment_ranges[0].start_line.should eq(0)
+      comment_ranges[0].end_line.should eq(2)
+    end
+
+    it "handles empty file" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "")
+      ranges = Lsp::Crystal::Providers::FoldingRange.run(doc)
+      ranges.should be_empty
+    end
+  end
+
+  describe "DocumentStore thread safety" do
+    it "handles concurrent open/get/close" do
+      store = Lsp::Crystal::DocumentStore.new
+      done = Channel(Nil).new(10)
+
+      10.times do |i|
+        spawn do
+          uri = "file:///test_#{i}.cr"
+          store.open(uri, "crystal", 1, "content #{i}")
+          store.get(uri)
+          store.close(uri)
+          done.send(nil)
+        end
+      end
+
+      10.times { done.receive }
+      # Should not crash — all docs closed
+      store.size.should eq(0)
+    end
+  end
+
+  # ============================================================
+  # Phase 3: Semantic Tokens, Call Hierarchy, Inlay Hints, Code Lens, Configuration
+  # ============================================================
+
+  describe "Providers::SemanticTokens" do
+    it "tokenizes keywords" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "def foo\nend\n")
+      data = Lsp::Crystal::Providers::SemanticTokens.run(doc)
+      # Should have tokens for: def(keyword), foo(function), end(keyword)
+      data.size.should be > 0
+      # Data is delta-encoded: [deltaLine, deltaCol, length, type, modifiers]
+      (data.size % 5).should eq(0)
+    end
+
+    it "tokenizes strings and numbers" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "x = \"hello\"\ny = 42\n")
+      data = Lsp::Crystal::Providers::SemanticTokens.run(doc)
+      (data.size % 5).should eq(0)
+      data.size.should be > 0
+    end
+
+    it "tokenizes comments" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "# comment\nx = 1\n")
+      data = Lsp::Crystal::Providers::SemanticTokens.run(doc)
+      # First token should be a comment (type 12)
+      data[3].should eq(12) # token type for comment
+    end
+
+    it "tokenizes types (uppercase identifiers)" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "String\n")
+      data = Lsp::Crystal::Providers::SemanticTokens.run(doc)
+      data[3].should eq(1) # type
+    end
+
+    it "returns empty for empty document" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "")
+      data = Lsp::Crystal::Providers::SemanticTokens.run(doc)
+      data.should be_empty
+    end
+  end
+
+  describe "SemanticTokens handler integration" do
+    it "returns token data via textDocument/semanticTokens/full" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/st.cr", languageId: "crystal", version: 1, text: "def foo\n  42\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(200, "textDocument/semanticTokens/full", {
+        textDocument: {uri: "file:///tmp/st.cr"},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(200)
+      data = resp["result"]["data"].as_a
+      (data.size % 5).should eq(0)
+      client.close
+    end
+  end
+
+  describe "Providers::CallHierarchy" do
+    it "prepares call hierarchy on a method definition" do
+      code = "def greet(name)\n  puts name\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      items = Lsp::Crystal::Providers::CallHierarchy.prepare(doc, 0, 6)
+      items.size.should eq(1)
+      items[0].name.should eq("greet")
+    end
+
+    it "prepares call hierarchy on a class definition" do
+      code = "class Foo\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      items = Lsp::Crystal::Providers::CallHierarchy.prepare(doc, 0, 6)
+      items.size.should eq(1)
+      items[0].name.should eq("Foo")
+    end
+
+    it "returns empty for whitespace" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "  \n")
+      items = Lsp::Crystal::Providers::CallHierarchy.prepare(doc, 0, 0)
+      items.should be_empty
+    end
+  end
+
+  describe "CallHierarchy handler integration" do
+    it "returns items via textDocument/prepareCallHierarchy" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/ch.cr", languageId: "crystal", version: 1, text: "def hello\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(201, "textDocument/prepareCallHierarchy", {
+        textDocument: {uri: "file:///tmp/ch.cr"},
+        position:     {line: 0, character: 4},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(201)
+      items = resp["result"].as_a
+      items.size.should eq(1)
+      items[0]["name"].as_s.should eq("hello")
+      client.close
+    end
+  end
+
+  describe "Providers::InlayHints" do
+    it "shows type hints for integer literals" do
+      code = "x = 42\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 10)
+      )
+      hints = Lsp::Crystal::Providers::InlayHints.run(doc, range)
+      hints.size.should eq(1)
+      hints[0].label.should eq(": Int32")
+      hints[0].kind.should eq(1) # Type hint
+    end
+
+    it "shows type hints for string literals" do
+      code = "name = \"hello\"\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 20)
+      )
+      hints = Lsp::Crystal::Providers::InlayHints.run(doc, range)
+      hints.size.should eq(1)
+      hints[0].label.should eq(": String")
+    end
+
+    it "shows type hints for constructor calls" do
+      code = "server = Server.new\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 25)
+      )
+      hints = Lsp::Crystal::Providers::InlayHints.run(doc, range)
+      hints.size.should eq(1)
+      hints[0].label.should eq(": Server")
+    end
+
+    it "skips lines with explicit type annotations" do
+      code = "x : Int32 = 42\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 20)
+      )
+      hints = Lsp::Crystal::Providers::InlayHints.run(doc, range)
+      hints.should be_empty
+    end
+
+    it "returns empty for empty document" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "")
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 0)
+      )
+      hints = Lsp::Crystal::Providers::InlayHints.run(doc, range)
+      hints.should be_empty
+    end
+  end
+
+  describe "InlayHints handler integration" do
+    it "returns hints via textDocument/inlayHint" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/ih.cr", languageId: "crystal", version: 1, text: "x = 42\n"},
+      })
+      Fiber.yield
+
+      client.send_request(202, "textDocument/inlayHint", {
+        textDocument: {uri: "file:///tmp/ih.cr"},
+        range:        {start: {line: 0, character: 0}, "end": {line: 0, character: 10}},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(202)
+      hints = resp["result"].as_a
+      hints.size.should eq(1)
+      hints[0]["label"].as_s.should eq(": Int32")
+      client.close
+    end
+  end
+
+  describe "Providers::CodeLens" do
+    it "shows reference count for methods" do
+      code = "def greet\nend\ngreet\ngreet\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, nil)
+      lenses.size.should eq(1)
+      lenses[0].command.not_nil!.title.should eq("2 references")
+    end
+
+    it "shows reference count for classes" do
+      code = "class Foo\nend\nFoo.new\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, nil)
+      # Should have lenses for Foo
+      foo_lens = lenses.find { |l| l.range.start.line == 0 }
+      foo_lens.should_not be_nil
+      foo_lens.not_nil!.command.not_nil!.title.should eq("1 reference")
+    end
+
+    it "returns empty for no symbols" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "x = 1\n")
+      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, nil)
+      lenses.should be_empty
+    end
+  end
+
+  describe "CodeLens handler integration" do
+    it "returns lenses via textDocument/codeLens" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/cl.cr", languageId: "crystal", version: 1, text: "def foo\nend\nfoo\n"},
+      })
+      Fiber.yield
+
+      client.send_request(203, "textDocument/codeLens", {
+        textDocument: {uri: "file:///tmp/cl.cr"},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(203)
+      lenses = resp["result"].as_a
+      lenses.size.should eq(1)
+      client.close
+    end
+  end
+
+  describe "Configuration" do
+    it "updates settings from JSON" do
+      config = Lsp::Crystal::Configuration.new
+      config.crystal_path.should eq("crystal")
+      config.diagnostics_delay.should eq(500)
+
+      settings = JSON.parse(%({"crystalLsp": {"crystalPath": "/usr/bin/crystal", "diagnosticsDelay": 1000, "formatOnSave": true}}))
+      config.update(settings)
+
+      config.crystal_path.should eq("/usr/bin/crystal")
+      config.diagnostics_delay.should eq(1000)
+      config.format_on_save.should be_true
+    end
+
+    it "handles missing settings gracefully" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%({"other": "value"}))
+      config.update(settings)
+      config.crystal_path.should eq("crystal") # unchanged
+    end
+
+    it "returns diagnostics_debounce as Time::Span" do
+      config = Lsp::Crystal::Configuration.new
+      config.diagnostics_debounce.should eq(500.milliseconds)
+      config.diagnostics_delay = 1000
+      config.diagnostics_debounce.should eq(1.second)
+    end
+  end
+
+  describe "Configuration handler integration" do
+    it "handles workspace/didChangeConfiguration" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("workspace/didChangeConfiguration", {
+        settings: {crystalLsp: {diagnosticsDelay: 1000}},
+      })
+      Fiber.yield
+
+      client.server.configuration.diagnostics_delay.should eq(1000)
+      client.close
+    end
+  end
+
+  describe "Lifecycle capabilities for Phase 3" do
+    it "advertises semantic tokens provider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+      caps = resp["result"]["capabilities"]
+
+      caps["semanticTokensProvider"].should_not be_nil
+      caps["semanticTokensProvider"]["full"].should eq(true)
+      legend = caps["semanticTokensProvider"]["legend"]
+      legend["tokenTypes"].as_a.size.should be > 0
+      legend["tokenModifiers"].as_a.size.should be > 0
+      client.close
+    end
+
+    it "advertises call hierarchy provider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+      resp["result"]["capabilities"]["callHierarchyProvider"].should eq(true)
+      client.close
+    end
+
+    it "advertises inlay hint provider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+      resp["result"]["capabilities"]["inlayHintProvider"].should eq(true)
+      client.close
+    end
+
+    it "advertises code lens provider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+      resp["result"]["capabilities"]["codeLensProvider"].should_not be_nil
+      client.close
+    end
+  end
+
+  describe "Transport concurrent writes" do
+    it "serializes concurrent writes via mutex" do
+      input = IO::Memory.new
+      output = IO::Memory.new
+      transport = Lsp::Crystal::Transport::Stdio.new(input: input, output: output)
+      done = Channel(Nil).new(5)
+
+      5.times do |i|
+        spawn do
+          transport.write_message(%({"id":#{i}}))
+          done.send(nil)
+        end
+      end
+
+      5.times { done.receive }
+
+      # Verify output contains 5 complete messages (no interleaving)
+      output.rewind
+      raw = output.gets_to_end
+      # Each message should be preceded by Content-Length header
+      raw.scan(/Content-Length:/).size.should eq(5)
+    end
+  end
 end

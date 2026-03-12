@@ -20,9 +20,9 @@ Transport::Stdio ─── JSON-RPC 2.0, Content-Length framing, 10MB limit
     │
 Server ─── main loop, project root detection, diagnostics worker, signal handling
     │
-Dispatcher ─── lazy-init, routes 39 methods → handlers, sync/async dispatch
+Dispatcher ─── lazy-init, routes 41 methods → handlers, sync/async dispatch
     │
-Handlers (28 files) ─── extract params, call provider, format response
+Handlers (30 files) ─── extract params, call provider, format response
     │
 Providers (23 files) ─── business logic
     ├─ CrystalTool ─── compiler invocations, 30s timeout, cancellation, request coalescing

@@ -88,13 +88,13 @@
 
 **Goal: 1.0 release quality.**
 
-- [ ] Structured logging — JSON log format with request IDs for tracing
-- [ ] Integration test suite — tests against real Crystal project files
-- [ ] Concurrency stress tests — rapid open/edit/close cycles
-- [ ] Large file tests — documents with 10K+ lines
-- [ ] Graceful shutdown — handle SIGTERM, drain pending work
-- [ ] CI/CD pipeline — automated build + test on Crystal nightly
-- [ ] Editor-specific documentation — VS Code, Neovim, Helix, Zed setup guides
+- [x] Structured logging — JSON log format with request IDs for tracing
+- [x] Integration test suite — tests against real Crystal project files
+- [x] Concurrency stress tests — rapid open/edit/close cycles
+- [x] Large file tests — documents with 10K+ lines
+- [x] Graceful shutdown — handle SIGTERM, drain pending work
+- [x] CI/CD pipeline — automated build + test on Crystal nightly
+- [x] Editor-specific documentation — VS Code, Neovim, Helix, Zed setup guides
 
 ---
 

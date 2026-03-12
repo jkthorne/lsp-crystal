@@ -12,7 +12,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success_null(id)
       end
 
-      result = Providers::Hover.run(doc, line, character)
+      result = Providers::Hover.run(doc, line, character, server.ast_index)
       if result
         JSONRPC::Response.success(id, result)
       else

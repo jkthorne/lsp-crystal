@@ -3,7 +3,7 @@ module Lsp::Crystal::Providers
     MAX_RESULTS = 500
 
     # Find all references to the word at the given position across the workspace
-    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String?, include_declaration : Bool = true) : Array(Location)
+    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String?, include_declaration : Bool = true, workspace_index : WorkspaceIndex? = nil) : Array(Location)
       word = extract_word(document, line, character)
       return [] of Location if word.empty?
 
@@ -13,8 +13,12 @@ module Lsp::Crystal::Providers
       # Search current document first
       find_in_content(document.content, document.uri, pattern, results)
 
-      # Search workspace files if we have a root
-      if root = workspace_root
+      # Use index if available, otherwise fall back to file scanning
+      if workspace_index && workspace_index.indexed?
+        current_path = URI.uri_to_path(document.uri)
+        indexed_refs = workspace_index.search_references(pattern, exclude_path: current_path, max_results: MAX_RESULTS - results.size)
+        results.concat(indexed_refs)
+      elsif root = workspace_root
         current_path = URI.uri_to_path(document.uri)
         Dir.glob(File.join(root, "**", "*.cr")) do |file_path|
           break if results.size >= MAX_RESULTS

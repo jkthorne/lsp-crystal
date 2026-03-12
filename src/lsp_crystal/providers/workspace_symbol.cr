@@ -13,6 +13,12 @@ module Lsp::Crystal::Providers
       end
     end
 
+    # Use the workspace index for fast symbol search
+    def self.run_indexed(index : WorkspaceIndex, query : String) : Array(WorkspaceSymbolInfo)
+      index.search_symbols(query, MAX_RESULTS)
+    end
+
+    # Fallback: scan files directly (used when index not ready)
     def self.run(workspace_root : String, query : String) : Array(WorkspaceSymbolInfo)
       results = [] of WorkspaceSymbolInfo
       query_lower = query.downcase

@@ -10,6 +10,7 @@ module Lsp::Crystal
     getter document_store : DocumentStore
     getter workspace_root : String?
     getter main_file : String?
+    getter workspace_index : WorkspaceIndex
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
@@ -17,6 +18,7 @@ module Lsp::Crystal
 
     def initialize(@transport : Transport::Stdio = Transport::Stdio.new)
       @document_store = DocumentStore.new
+      @workspace_index = WorkspaceIndex.new
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new
@@ -82,6 +84,35 @@ module Lsp::Crystal
       end
 
       Log.info { "Workspace root: #{root}" }
+
+      # Background-index the workspace
+      spawn do
+        send_progress_begin("indexing", "Indexing workspace...")
+        @workspace_index.index(root)
+        send_progress_end("indexing")
+      end
+    end
+
+    def send_progress_begin(token : String, title : String, message : String? = nil) : Nil
+      send_notification("$/progress", {
+        token: token,
+        value: {kind: "begin", title: title, message: message},
+      })
+    end
+
+    def send_progress_report(token : String, message : String? = nil, percentage : Int32? = nil) : Nil
+      value = Hash(String, String | Int32).new
+      value["kind"] = "report"
+      value["message"] = message if message
+      value["percentage"] = percentage if percentage
+      send_notification("$/progress", {token: token, value: value})
+    end
+
+    def send_progress_end(token : String, message : String? = nil) : Nil
+      send_notification("$/progress", {
+        token: token,
+        value: {kind: "end", message: message},
+      })
     end
 
     private def spawn_diagnostics_worker

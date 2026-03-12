@@ -27,8 +27,8 @@ module Lsp::Crystal::Providers
     end
 
     # Perform rename across workspace
-    def self.run(document : Document, line : Int32, character : Int32, new_name : String, workspace_root : String?) : WorkspaceEdit
-      locations = References.run(document, line, character, workspace_root, include_declaration: true)
+    def self.run(document : Document, line : Int32, character : Int32, new_name : String, workspace_root : String?, workspace_index : WorkspaceIndex? = nil) : WorkspaceEdit
+      locations = References.run(document, line, character, workspace_root, include_declaration: true, workspace_index: workspace_index)
 
       changes = Hash(String, Array(TextEdit)).new
       locations.each do |loc|

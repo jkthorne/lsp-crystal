@@ -8,9 +8,11 @@ module Lsp::Crystal::Handlers
       version = td["version"].as_i
       text = td["text"].as_s
 
-      server.document_store.open(uri, language_id, version, text)
+      doc = server.document_store.open(uri, language_id, version, text)
       Log.debug { "Opened: #{uri}" }
 
+      # Update workspace index with open document content
+      server.workspace_index.invalidate_content(doc.path, text)
       server.schedule_diagnostics(uri)
       nil
     end
@@ -22,9 +24,13 @@ module Lsp::Crystal::Handlers
       version = td["version"].as_i
       changes = params["contentChanges"].as_a
 
-      server.document_store.update(uri, version, changes)
+      doc = server.document_store.update(uri, version, changes)
       Log.debug { "Changed: #{uri} (v#{version})" }
 
+      # Update workspace index with latest content
+      if doc
+        server.workspace_index.invalidate_content(doc.path, doc.content)
+      end
       server.schedule_diagnostics(uri)
       nil
     end
@@ -38,7 +44,12 @@ module Lsp::Crystal::Handlers
       if text = params["text"]?.try(&.as_s?)
         if doc = server.document_store.get(uri)
           doc.content = text
+          server.workspace_index.invalidate_content(doc.path, text)
         end
+      else
+        # Re-read from disk on save
+        path = URI.uri_to_path(uri)
+        server.workspace_index.invalidate(path)
       end
 
       server.schedule_diagnostics(uri)
@@ -50,6 +61,10 @@ module Lsp::Crystal::Handlers
       uri = params["textDocument"]["uri"].as_s
       server.document_store.close(uri)
       Log.debug { "Closed: #{uri}" }
+
+      # Re-index from disk when document is closed
+      path = URI.uri_to_path(uri)
+      server.workspace_index.invalidate(path)
 
       # Clear diagnostics for closed file
       server.send_notification("textDocument/publishDiagnostics", {uri: uri, diagnostics: [] of Nil})

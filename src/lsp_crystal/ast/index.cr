@@ -129,6 +129,48 @@ module Lsp::Crystal
         @mutex.synchronize { @symbols.size }
       end
 
+      # Index symbols from macro-expanded source code.
+      # Parses each expanded source string and merges synthetic symbols into the file's symbol table.
+      def index_macro_expansions(uri : String, expanded_sources : Array(String), line : Int32) : Nil
+        expanded_sources.each do |source|
+          result = AST.parse(source, "expanded")
+          next unless result.success? && (node = result.node)
+
+          visitor = IndexVisitor.new(uri)
+          node.accept(visitor)
+
+          @mutex.synchronize do
+            existing = @symbols[uri]? || [] of IndexedSymbol
+            visitor.symbols.each do |sym|
+              # Adjust symbol ranges to point to the macro call line
+              adjusted_range = Range.new(
+                start: Position.new(line: line, character: 0),
+                end_pos: Position.new(line: line, character: 0)
+              )
+              adjusted = IndexedSymbol.new(
+                name: sym.name,
+                fqn: sym.fqn,
+                kind: sym.kind,
+                range: adjusted_range,
+                selection_range: adjusted_range,
+                container_fqn: sym.container_fqn,
+                superclass: sym.superclass,
+                includes: sym.includes,
+                params: sym.params
+              )
+              # Avoid duplicates
+              unless existing.any? { |e| e.name == adjusted.name && e.fqn == adjusted.fqn }
+                existing << adjusted
+                (@definitions[adjusted.fqn] ||= [] of {String, Range}) << {uri, adjusted_range}
+              end
+            end
+            @symbols[uri] = existing
+          end
+        rescue
+          # Parse failure on expanded source — skip
+        end
+      end
+
       private def index_file_internal(uri : String, content : String) : Nil
         result = AST.parse(content, URI.uri_to_path(uri))
         return unless result.success? && (node = result.node)

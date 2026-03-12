@@ -60,6 +60,21 @@ module Lsp::Crystal::Handlers
 
     def self.initialized(server : Lsp::Crystal::Server, message : JSONRPC::Message) : String?
       Log.info { "Client initialized" }
+
+      # Register file watcher for *.cr files via dynamic registration
+      server.send_request("client/registerCapability", {
+        registrations: [{
+          id:              "file-watcher",
+          method:          "workspace/didChangeWatchedFiles",
+          registerOptions: {
+            watchers: [{
+              globPattern: "**/*.cr",
+              kind:        7, # Create | Change | Delete
+            }],
+          },
+        }],
+      })
+
       nil
     end
 

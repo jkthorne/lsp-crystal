@@ -138,6 +138,7 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 | 9 | Medium Features | Severity config, linked editing, type hierarchy, enhanced code actions |
 | 10 | Advanced Intelligence | Semantic tokens delta, macro-aware intelligence, persistent cross-file AST index |
 | 11 | Compiler Acceleration | Tool result cache, request coalescing, parallel hover dispatch, `crystal tool expand`, expand command |
+| 12 | High-Impact Roadmap | `completionItem/resolve` for lazy documentation loading, `textDocument/diagnostic` pull model with result caching |
 
 ---
 

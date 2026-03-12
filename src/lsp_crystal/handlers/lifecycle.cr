@@ -50,6 +50,7 @@ module Lsp::Crystal::Handlers
           codeLensProvider:         {resolveProvider: false},
           linkedEditingRangeProvider: true,
           typeHierarchyProvider:     true,
+          executeCommandProvider:    {commands: ["crystal-lsp/expandMacro"]},
         },
         serverInfo: {
           name:    "crystal-lsp",

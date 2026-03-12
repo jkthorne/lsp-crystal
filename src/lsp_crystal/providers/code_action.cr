@@ -7,7 +7,7 @@ module Lsp::Crystal::Providers
     REFACTOR         = "refactor"
     REFACTOR_EXTRACT = "refactor.extract"
 
-    def self.run(document : Document, range : Range, diagnostics : Array(JSON::Any)?, workspace_index : WorkspaceIndex? = nil) : Array(Lsp::Crystal::CodeAction)
+    def self.run(document : Document, range : Range, diagnostics : Array(JSON::Any)?, workspace_index : WorkspaceIndex? = nil, ast_cache : AST::Cache? = nil) : Array(Lsp::Crystal::CodeAction)
       actions = [] of Lsp::Crystal::CodeAction
 
       # Diagnostic-driven quick fixes
@@ -39,6 +39,11 @@ module Lsp::Crystal::Providers
 
       # Refactoring: convert single-line block to multi-line
       if action = convert_to_multiline(document, range)
+        actions << action
+      end
+
+      # Macro expand: offer "Expand macro" when cursor is on a non-known macro call
+      if action = suggest_expand_macro(document, range, ast_cache)
         actions << action
       end
 
@@ -462,6 +467,44 @@ module Lsp::Crystal::Providers
         title: "Convert to multi-line block",
         kind: REFACTOR,
         edit: edit
+      )
+    end
+
+    private def self.suggest_expand_macro(document : Document, range : Range, ast_cache : AST::Cache?) : Lsp::Crystal::CodeAction?
+      return nil unless range.start.line == range.end_pos.line
+
+      line_text = document.line_at(range.start.line)
+      return nil unless line_text
+
+      # Look for a Call node on this line that isn't a known macro
+      # Simple heuristic: check if the line looks like a macro call (bare word followed by args)
+      match = line_text.match(/^\s*(\w+[?!]?)\s+/)
+      return nil unless match
+
+      call_name = match[1]
+      return nil if MacroExpander.known_macro?(call_name)
+      return nil if call_name.in?("def", "class", "module", "struct", "enum", "if", "else",
+        "elsif", "end", "do", "require", "include", "extend", "return", "while", "until",
+        "case", "when", "begin", "rescue", "ensure", "raise", "yield", "abstract", "private",
+        "protected", "lib", "fun", "alias", "type", "macro", "annotation", "for", "in",
+        "select", "puts", "pp", "p", "print", "spawn", "describe", "it", "context")
+
+      # Determine cursor column (start of the call name)
+      call_start = line_text.index(call_name)
+      character = call_start || range.start.character
+
+      Lsp::Crystal::CodeAction.new(
+        title: "Expand macro '#{call_name}'",
+        kind: REFACTOR,
+        command: Lsp::Crystal::Command.new(
+          title: "Expand macro",
+          command: "crystal-lsp/expandMacro",
+          arguments: [JSON::Any.new(Hash(String, JSON::Any){
+            "uri"       => JSON::Any.new(document.uri),
+            "line"      => JSON::Any.new(range.start.line.to_i64),
+            "character" => JSON::Any.new(character.to_i64),
+          })]
+        )
       )
     end
 

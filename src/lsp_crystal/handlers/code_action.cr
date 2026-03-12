@@ -24,7 +24,7 @@ module Lsp::Crystal::Handlers
 
       diagnostics = params["context"]?.try { |c| c["diagnostics"]?.try(&.as_a) }
 
-      actions = Providers::CodeAction.run(doc, range, diagnostics, server.workspace_index)
+      actions = Providers::CodeAction.run(doc, range, diagnostics, server.workspace_index, server.ast_cache)
       JSONRPC::Response.success(id, actions)
     end
   end

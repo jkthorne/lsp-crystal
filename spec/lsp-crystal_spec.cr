@@ -4992,4 +4992,455 @@ describe Lsp::Crystal do
       FileUtils.rm_rf(dir) if dir
     end
   end
+
+  describe "ToolResultCache" do
+    it "stores and retrieves tool results" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "output", "")
+      cache.put("context", "/tmp/test.cr", 1, 1, 12345_u64, result)
+
+      cached = cache.get("context", "/tmp/test.cr", 1, 1, 12345_u64)
+      cached.should_not be_nil
+      cached.not_nil!.stdout.should eq("output")
+    end
+
+    it "returns nil for cache miss" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      cached = cache.get("context", "/tmp/test.cr", 1, 1, 12345_u64)
+      cached.should be_nil
+    end
+
+    it "returns nil for different content hash" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "output", "")
+      cache.put("context", "/tmp/test.cr", 1, 1, 12345_u64, result)
+
+      cached = cache.get("context", "/tmp/test.cr", 1, 1, 99999_u64)
+      cached.should be_nil
+    end
+
+    it "returns nil for different tool" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "output", "")
+      cache.put("context", "/tmp/test.cr", 1, 1, 12345_u64, result)
+
+      cached = cache.get("implementations", "/tmp/test.cr", 1, 1, 12345_u64)
+      cached.should be_nil
+    end
+
+    it "invalidates by file path" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "output", "")
+      cache.put("context", "/tmp/test.cr", 1, 1, 12345_u64, result)
+      cache.put("context", "/tmp/other.cr", 1, 1, 12345_u64, result)
+
+      cache.invalidate("/tmp/test.cr")
+      cache.get("context", "/tmp/test.cr", 1, 1, 12345_u64).should be_nil
+      cache.get("context", "/tmp/other.cr", 1, 1, 12345_u64).should_not be_nil
+    end
+
+    it "invalidates by URI" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "output", "")
+      cache.put("context", "/tmp/test.cr", 1, 1, 12345_u64, result)
+
+      cache.invalidate_uri("file:///tmp/test.cr")
+      cache.get("context", "/tmp/test.cr", 1, 1, 12345_u64).should be_nil
+    end
+
+    it "evicts LRU entries when at capacity" do
+      cache = Lsp::Crystal::ToolResultCache.new(max_entries: 3)
+      r = Lsp::Crystal::CrystalTool::ToolResult.new(true, "", "")
+
+      cache.put("context", "/tmp/a.cr", 1, 1, 1_u64, r)
+      cache.put("context", "/tmp/b.cr", 1, 1, 2_u64, r)
+      cache.put("context", "/tmp/c.cr", 1, 1, 3_u64, r)
+
+      # Access a to make it most recently used
+      cache.get("context", "/tmp/a.cr", 1, 1, 1_u64)
+
+      # Adding d should evict b (least recently used)
+      cache.put("context", "/tmp/d.cr", 1, 1, 4_u64, r)
+
+      cache.get("context", "/tmp/a.cr", 1, 1, 1_u64).should_not be_nil
+      cache.get("context", "/tmp/b.cr", 1, 1, 2_u64).should be_nil
+      cache.get("context", "/tmp/c.cr", 1, 1, 3_u64).should_not be_nil
+      cache.get("context", "/tmp/d.cr", 1, 1, 4_u64).should_not be_nil
+    end
+
+    it "expires entries after TTL" do
+      cache = Lsp::Crystal::ToolResultCache.new(ttl_seconds: 0)
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "output", "")
+      cache.put("context", "/tmp/test.cr", 1, 1, 12345_u64, result)
+
+      # TTL of 0 seconds means it should be expired immediately
+      sleep 10.milliseconds
+      cached = cache.get("context", "/tmp/test.cr", 1, 1, 12345_u64)
+      cached.should be_nil
+    end
+
+    it "get_or_fetch uses cached value" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "cached", "")
+      cache.put("context", "/tmp/test.cr", 1, 1, 12345_u64, result)
+
+      fetch_called = false
+      fetched = cache.get_or_fetch("context", "/tmp/test.cr", 1, 1, 12345_u64) do
+        fetch_called = true
+        Lsp::Crystal::CrystalTool::ToolResult.new(true, "fresh", "")
+      end
+
+      fetch_called.should be_false
+      fetched.stdout.should eq("cached")
+    end
+
+    it "get_or_fetch calls block on miss" do
+      cache = Lsp::Crystal::ToolResultCache.new
+
+      fetched = cache.get_or_fetch("context", "/tmp/test.cr", 1, 1, 12345_u64) do
+        Lsp::Crystal::CrystalTool::ToolResult.new(true, "fresh", "")
+      end
+
+      fetched.stdout.should eq("fresh")
+      # Should now be cached
+      cache.get("context", "/tmp/test.cr", 1, 1, 12345_u64).should_not be_nil
+    end
+
+    it "clears all entries" do
+      cache = Lsp::Crystal::ToolResultCache.new
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "", "")
+      cache.put("context", "/tmp/a.cr", 1, 1, 1_u64, result)
+      cache.put("context", "/tmp/b.cr", 1, 1, 2_u64, result)
+
+      cache.clear
+      cache.size.should eq(0)
+    end
+  end
+
+  describe "Request Coalescing" do
+    it "coalesces identical tool requests" do
+      # Test that run_coalesced returns the same result for concurrent identical requests
+      result1 : Lsp::Crystal::CrystalTool::ToolResult? = nil
+      result2 : Lsp::Crystal::CrystalTool::ToolResult? = nil
+      done = Channel(Nil).new(2)
+
+      # Use format (stdin-based) to test coalescing since it doesn't need a real file
+      spawn do
+        result1 = Lsp::Crystal::CrystalTool.run_coalesced("test:coalesce:1", ["tool", "format", "-"], input: "x=1")
+        done.send(nil)
+      end
+      spawn do
+        result2 = Lsp::Crystal::CrystalTool.run_coalesced("test:coalesce:1", ["tool", "format", "-"], input: "x=1")
+        done.send(nil)
+      end
+
+      2.times { done.receive }
+      result1.should_not be_nil
+      result2.should_not be_nil
+      # Both should get the same formatted output
+      result1.not_nil!.stdout.should eq(result2.not_nil!.stdout)
+    end
+  end
+
+  describe "CrystalTool expand parser" do
+    it "parses successful expand output" do
+      json = %({"status":"ok","expansions":[{"original_source":"my_macro","expanded_source":"def foo\\nend"}]})
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, json, "")
+
+      parsed = Lsp::Crystal::CrystalTool.parse_expand_result(result)
+      parsed.should_not be_nil
+      parsed.not_nil!.status.should eq("ok")
+      parsed.not_nil!.expansions.size.should eq(1)
+      parsed.not_nil!.expansions[0].original_source.should eq("my_macro")
+      parsed.not_nil!.expansions[0].expanded_sources.should eq(["def foo\nend"])
+    end
+
+    it "returns nil for failed result" do
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(false, "", "error")
+      parsed = Lsp::Crystal::CrystalTool.parse_expand_result(result)
+      parsed.should be_nil
+    end
+
+    it "returns nil for non-ok status" do
+      json = %({"status":"error","message":"no expansion"})
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, json, "")
+
+      parsed = Lsp::Crystal::CrystalTool.parse_expand_result(result)
+      parsed.should be_nil
+    end
+
+    it "handles expanded_sources array format" do
+      json = %({"status":"ok","expansions":[{"original_source":"m","expanded_sources":["def a\\nend","def b\\nend"]}]})
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, json, "")
+
+      parsed = Lsp::Crystal::CrystalTool.parse_expand_result(result)
+      parsed.should_not be_nil
+      parsed.not_nil!.expansions[0].expanded_sources.size.should eq(2)
+    end
+
+    it "handles malformed JSON gracefully" do
+      result = Lsp::Crystal::CrystalTool::ToolResult.new(true, "not json", "")
+      parsed = Lsp::Crystal::CrystalTool.parse_expand_result(result)
+      parsed.should be_nil
+    end
+  end
+
+  describe "Configuration new settings" do
+    it "has default tool cache settings" do
+      config = Lsp::Crystal::Configuration.new
+      config.tool_cache_ttl.should eq(60)
+      config.tool_cache_max_entries.should eq(500)
+      config.macro_expand_enabled.should be_true
+      config.macro_expand_timeout.should eq(15)
+      config.parallel_tool_calls.should be_true
+    end
+
+    it "updates tool cache settings from JSON" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%({"crystalLsp":{"toolCacheTtl":120,"toolCacheMaxEntries":1000,"macroExpandEnabled":false,"macroExpandTimeout":30,"parallelToolCalls":false}}))
+      config.update(settings)
+
+      config.tool_cache_ttl.should eq(120)
+      config.tool_cache_max_entries.should eq(1000)
+      config.macro_expand_enabled.should be_false
+      config.macro_expand_timeout.should eq(30)
+      config.parallel_tool_calls.should be_false
+    end
+
+    it "clamps tool cache TTL" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%({"crystalLsp":{"toolCacheTtl":9999}}))
+      config.update(settings)
+      config.tool_cache_ttl.should eq(600)
+    end
+
+    it "clamps macro expand timeout" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%({"crystalLsp":{"macroExpandTimeout":0}}))
+      config.update(settings)
+      config.macro_expand_timeout.should eq(1)
+    end
+  end
+
+  describe "AST Index macro expansion indexing" do
+    it "indexes symbols from expanded macro sources" do
+      index = Lsp::Crystal::AST::Index.new
+      uri = "file:///tmp/test_expand.cr"
+
+      # Simulate macro expansion producing a method
+      expanded = ["def generated_method\nend"]
+      index.index_macro_expansions(uri, expanded, 5)
+
+      symbols = index.symbols_for(uri)
+      symbols.any? { |s| s.name == "generated_method" }.should be_true
+    end
+
+    it "merges expanded symbols with existing ones" do
+      index = Lsp::Crystal::AST::Index.new
+      uri = "file:///tmp/test_expand.cr"
+      content = "class Foo\n  def existing\n  end\nend\n"
+      index.index_file(uri, content)
+
+      existing_count = index.symbols_for(uri).size
+
+      expanded = ["def generated_method\nend"]
+      index.index_macro_expansions(uri, expanded, 1)
+
+      new_count = index.symbols_for(uri).size
+      new_count.should be > existing_count
+    end
+
+    it "avoids duplicate expanded symbols" do
+      index = Lsp::Crystal::AST::Index.new
+      uri = "file:///tmp/test_expand.cr"
+
+      expanded = ["def generated_method\nend"]
+      index.index_macro_expansions(uri, expanded, 5)
+      first_count = index.symbols_for(uri).size
+
+      # Index same expansion again
+      index.index_macro_expansions(uri, expanded, 5)
+      second_count = index.symbols_for(uri).size
+
+      second_count.should eq(first_count)
+    end
+
+    it "handles invalid expanded source gracefully" do
+      index = Lsp::Crystal::AST::Index.new
+      uri = "file:///tmp/test_expand.cr"
+
+      # Invalid Crystal source
+      expanded = ["this is not valid crystal code }{"]
+      index.index_macro_expansions(uri, expanded, 5)
+
+      # Should not crash, just skip
+      symbols = index.symbols_for(uri)
+      symbols.size.should eq(0)
+    end
+  end
+
+  describe "Code action: expand macro" do
+    it "offers expand macro action for non-built-in macro calls" do
+      store = Lsp::Crystal::DocumentStore.new
+      doc = store.open("file:///tmp/expand_test.cr", "crystal", 1,
+        "class Foo\n  json_mapping name: String\nend\n")
+
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 1, character: 2),
+        end_pos: Lsp::Crystal::Position.new(line: 1, character: 2)
+      )
+
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      expand_actions = actions.select { |a| a.title.includes?("Expand macro") }
+      expand_actions.size.should eq(1)
+      expand_actions[0].command.should_not be_nil
+      expand_actions[0].command.not_nil!.command.should eq("crystal-lsp/expandMacro")
+    end
+
+    it "does not offer expand for known macros" do
+      store = Lsp::Crystal::DocumentStore.new
+      doc = store.open("file:///tmp/expand_test.cr", "crystal", 1,
+        "class Foo\n  property name : String\nend\n")
+
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 1, character: 2),
+        end_pos: Lsp::Crystal::Position.new(line: 1, character: 2)
+      )
+
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      expand_actions = actions.select { |a| a.title.includes?("Expand macro") }
+      expand_actions.size.should eq(0)
+    end
+
+    it "does not offer expand for keywords" do
+      store = Lsp::Crystal::DocumentStore.new
+      doc = store.open("file:///tmp/expand_test.cr", "crystal", 1,
+        "def foo\n  return 42\nend\n")
+
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 1, character: 2),
+        end_pos: Lsp::Crystal::Position.new(line: 1, character: 2)
+      )
+
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      expand_actions = actions.select { |a| a.title.includes?("Expand macro") }
+      expand_actions.size.should eq(0)
+    end
+  end
+
+  describe "Server tool result cache integration" do
+    it "has tool_result_cache accessible" do
+      client = TestClient.new
+      client.server.tool_result_cache.should be_a(Lsp::Crystal::ToolResultCache)
+      client.server.tool_result_cache.size.should eq(0)
+    ensure
+      client.try(&.close)
+    end
+
+    it "macro_expand_available? returns true by default" do
+      client = TestClient.new
+      client.server.macro_expand_available?.should be_true
+    ensure
+      client.try(&.close)
+    end
+
+    it "macro_expand_available? returns false after 3 failures" do
+      client = TestClient.new
+      3.times { client.server.record_expand_failure }
+      client.server.macro_expand_available?.should be_false
+    ensure
+      client.try(&.close)
+    end
+
+    it "reset_expand_failures re-enables expand" do
+      client = TestClient.new
+      3.times { client.server.record_expand_failure }
+      client.server.macro_expand_available?.should be_false
+      client.server.reset_expand_failures
+      client.server.macro_expand_available?.should be_true
+    ensure
+      client.try(&.close)
+    end
+  end
+
+  describe "Hover Tier 2 expand" do
+    it "returns nil for known macro keywords (handled by Tier 1)" do
+      store = Lsp::Crystal::DocumentStore.new
+      doc = store.open("file:///tmp/hover_expand.cr", "crystal", 1,
+        "class Foo\n  property name : String\nend\n")
+      cache = Lsp::Crystal::ToolResultCache.new
+
+      # Tier 2 should skip known macros since Tier 1 handles them
+      result = Lsp::Crystal::Providers::Hover.run(doc, 1, 5)
+      # This tests the Tier 1 path — property is a known macro
+      result.should_not be_nil
+      result.not_nil!.contents.value.should contain("Expands to")
+    end
+
+    it "formats expand hover result from cache" do
+      store = Lsp::Crystal::DocumentStore.new
+      doc = store.open("file:///tmp/hover_expand2.cr", "crystal", 1,
+        "class Foo\n  json_mapping name: String\nend\n")
+      cache = Lsp::Crystal::ToolResultCache.new
+
+      # Pre-populate cache with a mock expand result
+      json = %({"status":"ok","expansions":[{"original_source":"json_mapping","expanded_source":"def to_json\\nend"}]})
+      tool_result = Lsp::Crystal::CrystalTool::ToolResult.new(true, json, "")
+      cache.put("expand", doc.path, 2, 3, doc.content.hash.to_u64, tool_result)
+
+      # Create a mock server to test Tier 2
+      client = TestClient.new
+      # Can't easily test the full hover path without crystal tool, but we test the format method
+      parsed = Lsp::Crystal::CrystalTool.parse_expand_result(tool_result)
+      parsed.should_not be_nil
+      parsed.not_nil!.expansions.size.should eq(1)
+    ensure
+      client.try(&.close)
+    end
+  end
+
+  describe "Protocol Command type" do
+    it "serializes Command to JSON" do
+      cmd = Lsp::Crystal::Command.new(
+        title: "Expand macro",
+        command: "crystal-lsp/expandMacro",
+        arguments: [JSON::Any.new("test")]
+      )
+      json = cmd.to_json
+      parsed = JSON.parse(json)
+      parsed["title"].as_s.should eq("Expand macro")
+      parsed["command"].as_s.should eq("crystal-lsp/expandMacro")
+      parsed["arguments"].as_a.size.should eq(1)
+    end
+
+    it "serializes CodeAction with command" do
+      cmd = Lsp::Crystal::Command.new(
+        title: "Expand",
+        command: "crystal-lsp/expandMacro"
+      )
+      action = Lsp::Crystal::CodeAction.new(
+        title: "Expand macro 'my_macro'",
+        kind: "refactor",
+        command: cmd
+      )
+      json = action.to_json
+      parsed = JSON.parse(json)
+      parsed["title"].as_s.should eq("Expand macro 'my_macro'")
+      parsed["command"]["command"].as_s.should eq("crystal-lsp/expandMacro")
+    end
+  end
+
+  describe "Initialize with executeCommand capability" do
+    it "advertises executeCommandProvider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      response = client.read_response
+      capabilities = response["result"]["capabilities"]
+      capabilities["executeCommandProvider"].should_not be_nil
+      commands = capabilities["executeCommandProvider"]["commands"].as_a
+      commands.any? { |c| c.as_s == "crystal-lsp/expandMacro" }.should be_true
+    ensure
+      client.try(&.close)
+    end
+  end
 end

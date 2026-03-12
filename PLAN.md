@@ -4,8 +4,8 @@
 
 A full-featured Language Server Protocol implementation for Crystal, written in pure Crystal with zero external dependencies. Provides intelligent code assistance — navigation, completion, refactoring, diagnostics, and more — by combining a fast AST subsystem with `crystal tool` compiler integration.
 
-- **8,837 LOC** source across 82 files, **5,826 LOC** specs, **400 passing tests**
-- 23 providers, 30 handlers, 5 AST visitors, 12 infrastructure modules
+- **9,069 LOC** source across 83 files, **6,021 LOC** specs, **415 passing tests**
+- 23 providers, 31 handlers, 5 AST visitors, 12 infrastructure modules
 - Crystal >= 1.19.1, stdlib only (includes `compiler/crystal/syntax`)
 - MIT licensed, CI on Crystal latest + nightly
 
@@ -20,9 +20,9 @@ Transport::Stdio ─── JSON-RPC 2.0, Content-Length framing, 10MB limit
     │
 Server ─── main loop, project root detection, diagnostics worker, signal handling
     │
-Dispatcher ─── lazy-init, routes 41 methods → handlers, sync/async dispatch
+Dispatcher ─── lazy-init, routes 44 methods → handlers, sync/async dispatch
     │
-Handlers (30 files) ─── extract params, call provider, format response
+Handlers (31 files) ─── extract params, call provider, format response
     │
 Providers (23 files) ─── business logic
     ├─ CrystalTool ─── compiler invocations, 30s timeout, cancellation, request coalescing
@@ -37,7 +37,7 @@ Providers (23 files) ─── business logic
 
 ### Concurrency
 
-Main fiber reads stdin synchronously. Nine methods dispatch asynchronously in spawned fibers with `CancellationToken` support: `definition`, `typeDefinition`, `implementation`, `hover`, `formatting`, `rename`, `prepareCallHierarchy`, and both call hierarchy directions. Diagnostics run in a dedicated worker fiber with mutex-protected channel-based debouncing (500ms default). Hover dispatches `context` and `implementations` tool calls in parallel. Request coalescing deduplicates concurrent identical `crystal tool` invocations — the first caller runs the process, others wait for its result.
+Main fiber reads stdin synchronously. Ten methods dispatch asynchronously in spawned fibers with `CancellationToken` support: `definition`, `typeDefinition`, `implementation`, `hover`, `formatting`, `rangeFormatting`, `rename`, `prepareCallHierarchy`, and both call hierarchy directions. Diagnostics run in a dedicated worker fiber with mutex-protected channel-based debouncing (500ms default). Hover dispatches `context` and `implementations` tool calls in parallel. Request coalescing deduplicates concurrent identical `crystal tool` invocations — the first caller runs the process, others wait for its result.
 
 ### AST Integration
 
@@ -51,7 +51,7 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 | crystal_tool | 253 | Process spawning, 30s timeout, cancellation, request coalescing |
 | require_graph | 246 | Resolve relative/absolute/glob/directory requires, BFS transitive dependents |
 | workspace_index | 233 | Background file indexing, regex symbol search, progress reporting |
-| dispatcher | 190 | Method routing, sync/async dispatch, cancel request handling |
+| dispatcher | 198 | Method routing, sync/async dispatch, cancel request handling |
 | diagnostics (infra) | 142 | Content-hash caching, diff-based publishing, multi-file routing |
 | document_store | 136 | In-memory document state, incremental editing |
 | tool_result_cache | 122 | LRU cache for crystal tool results |
@@ -62,22 +62,22 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 ---
 
-## LSP Methods (41 registered)
+## LSP Methods (44 registered)
 
 | Category | Methods | Count |
 |----------|---------|-------|
 | Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` | 4 |
 | Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) | 4 |
 | Navigation | `definition`, `typeDefinition`, `implementation`, `references` | 4 |
-| Editing | `completion`, `completionItem/resolve`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` | 9 |
+| Editing | `completion`, `completionItem/resolve`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `rangeFormatting`, `onTypeFormatting`, `codeAction`, `linkedEditingRange` | 11 |
 | Symbols | `documentSymbol`, `workspace/symbol` | 2 |
 | Intelligence | `semanticTokens/full`, `semanticTokens/full/delta`, `documentHighlight`, `foldingRange`, `selectionRange` | 5 |
 | Call Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls` | 3 |
 | Type Hierarchy | `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` | 3 |
 | Diagnostics | `textDocument/diagnostic` | 1 |
-| Extras | `inlayHint`, `codeLens`, `workspace/executeCommand` | 3 |
+| Extras | `inlayHint`, `codeLens`, `codeLens/resolve`, `workspace/executeCommand` | 4 |
 | Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles` | 3 |
-| **Total** | + `$/cancelRequest` (handled inline) | **41 + 1** |
+| **Total** | + `$/cancelRequest` (handled inline) | **44 + 1** |
 
 ## Providers (23)
 
@@ -101,11 +101,11 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 | folding_range | 119 | Blocks, requires, comment sections |
 | type_definition | 102 | Navigate to variable/expression type source |
 | linked_editing_range | 99 | Block keyword ↔ `end` simultaneous editing |
-| code_lens | 94 | Reference counts above methods/classes |
+| code_lens | 94 | Reference counts above methods/classes, lazy resolution via `codeLens/resolve` |
 | workspace_symbol | 73 | Cross-file symbol search via AST index with regex fallback |
 | definition | 65 | AST index lookup with `crystal tool` fallback |
 | implementation | 34 | Abstract type implementations |
-| formatting | 20 | `crystal tool format` (full document) |
+| formatting | 110 | `crystal tool format` (full, range), on-type auto-indent/dedent |
 
 ### AST Subsystem
 
@@ -140,6 +140,7 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 | 10 | Advanced Intelligence | Semantic tokens delta, macro-aware intelligence, persistent cross-file AST index |
 | 11 | Compiler Acceleration | Tool result cache, request coalescing, parallel hover dispatch, `crystal tool expand`, expand command |
 | 12 | High-Impact Roadmap | `completionItem/resolve` for lazy documentation loading, `textDocument/diagnostic` pull model with result caching |
+| 13 | High-Impact Roadmap II | Snippet completions (12 Crystal idioms), `codeLens/resolve` lazy resolution, range formatting, on-type formatting (auto-indent/dedent) |
 
 ---
 
@@ -159,14 +160,6 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 ## Future Roadmap
 
-### High Impact
-
-**Range and on-type formatting** — Extend `documentFormattingProvider` to also support `documentRangeFormattingProvider` and `documentOnTypeFormattingProvider`. On-type could handle `end` insertion, auto-indent after `do`/`{`, and auto-close `#{}`.
-
-**Snippet completions** — Add snippet-based completions for Crystal idioms: `spec describe/it` blocks, `JSON::Serializable` boilerplate, `property`/`getter`/`setter` with types, error handling patterns.
-
-**Code lens resolve** — Implement `codeLens/resolve` for lazy computation of reference counts, improving responsiveness on large files.
-
 ### Low Impact / Exploratory
 
 **Test discovery and execution** — Detect `spec/**/*_spec.cr` files, extract `describe`/`it` blocks, expose via code lens or custom LSP extension for in-editor test running.
@@ -185,10 +178,10 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 | Metric | Value |
 |--------|-------|
-| Source files | 82 |
-| Source LOC | 8,837 |
-| Spec LOC | 5,826 |
-| Tests | 400 passing, 0 failing |
+| Source files | 83 |
+| Source LOC | 9,069 |
+| Spec LOC | 6,021 |
+| Tests | 415 passing, 0 failing |
 | External deps | 0 |
 | Crystal version | >= 1.19.1 |
 | CI | GitHub Actions (latest + nightly) |

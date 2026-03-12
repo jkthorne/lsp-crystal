@@ -8,6 +8,7 @@ module Lsp::Crystal
       "textDocument/implementation",
       "textDocument/hover",
       "textDocument/formatting",
+      "textDocument/rangeFormatting",
       "textDocument/rename",
       "textDocument/prepareCallHierarchy",
       "callHierarchy/incomingCalls",
@@ -133,6 +134,8 @@ module Lsp::Crystal
 
       # Phase 4-6: Formatting, Definition, Hover
       @handlers["textDocument/formatting"] = Handler.new { |server, msg| Handlers::Formatting.handle(server, msg) }
+      @handlers["textDocument/rangeFormatting"] = Handler.new { |server, msg| Handlers::Formatting.handle_range(server, msg) }
+      @handlers["textDocument/onTypeFormatting"] = Handler.new { |server, msg| Handlers::Formatting.handle_on_type(server, msg) }
       @handlers["textDocument/definition"] = Handler.new { |server, msg| Handlers::Definition.handle(server, msg) }
       @handlers["textDocument/hover"] = Handler.new { |server, msg| Handlers::Hover.handle(server, msg) }
 
@@ -168,6 +171,7 @@ module Lsp::Crystal
       @handlers["callHierarchy/outgoingCalls"] = Handler.new { |server, msg| Handlers::CallHierarchy.outgoing_calls(server, msg) }
       @handlers["textDocument/inlayHint"] = Handler.new { |server, msg| Handlers::InlayHints.handle(server, msg) }
       @handlers["textDocument/codeLens"] = Handler.new { |server, msg| Handlers::CodeLens.handle(server, msg) }
+      @handlers["codeLens/resolve"] = Handler.new { |server, msg| Handlers::CodeLensResolve.handle(server, msg) }
 
       # Type Hierarchy
       @handlers["textDocument/prepareTypeHierarchy"] = Handler.new { |server, msg| Handlers::TypeHierarchy.prepare(server, msg) }

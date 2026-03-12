@@ -1996,33 +1996,45 @@ describe Lsp::Crystal do
   end
 
   describe "Providers::CodeLens" do
-    it "shows reference count for methods" do
+    it "returns unresolved lenses with data" do
       code = "def greet\nend\ngreet\ngreet\n"
       doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
-      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, nil)
+      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, "file:///t.cr")
       lenses.size.should eq(1)
-      lenses[0].command.not_nil!.title.should eq("2 references")
+      lenses[0].command.should be_nil
+      lenses[0].data.should_not be_nil
+      lenses[0].data.not_nil!["name"].as_s.should eq("greet")
+      lenses[0].data.not_nil!["uri"].as_s.should eq("file:///t.cr")
     end
 
-    it "shows reference count for classes" do
+    it "resolves lens with reference count" do
+      code = "def greet\nend\ngreet\ngreet\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, "file:///t.cr")
+      resolved = Lsp::Crystal::Providers::CodeLens.resolve(lenses[0], doc, nil)
+      resolved.command.should_not be_nil
+      resolved.command.not_nil!.title.should eq("2 references")
+    end
+
+    it "resolves class lens with reference count" do
       code = "class Foo\nend\nFoo.new\n"
       doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
-      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, nil)
-      # Should have lenses for Foo
+      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, "file:///t.cr")
       foo_lens = lenses.find { |l| l.range.start.line == 0 }
       foo_lens.should_not be_nil
-      foo_lens.not_nil!.command.not_nil!.title.should eq("1 reference")
+      resolved = Lsp::Crystal::Providers::CodeLens.resolve(foo_lens.not_nil!, doc, nil)
+      resolved.command.not_nil!.title.should eq("1 reference")
     end
 
     it "returns empty for no symbols" do
       doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "x = 1\n")
-      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, nil)
+      lenses = Lsp::Crystal::Providers::CodeLens.run(doc, "file:///t.cr")
       lenses.should be_empty
     end
   end
 
   describe "CodeLens handler integration" do
-    it "returns lenses via textDocument/codeLens" do
+    it "returns unresolved lenses via textDocument/codeLens" do
       client = TestClient.new
       client.initialize_server
 
@@ -2039,6 +2051,34 @@ describe Lsp::Crystal do
       resp["id"].should eq(203)
       lenses = resp["result"].as_a
       lenses.size.should eq(1)
+      lenses[0]["data"].should_not be_nil
+      lenses[0]["command"]?.should be_nil
+      client.close
+    end
+
+    it "resolves a code lens via codeLens/resolve" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/clr.cr", languageId: "crystal", version: 1, text: "def foo\nend\nfoo\n"},
+      })
+      Fiber.yield
+
+      # First get the unresolved lenses
+      client.send_request(204, "textDocument/codeLens", {
+        textDocument: {uri: "file:///tmp/clr.cr"},
+      })
+      resp = client.read_response
+      lens = resp["result"].as_a[0]
+
+      # Now resolve it
+      client.send_request(205, "codeLens/resolve", lens)
+      resp = client.read_response
+
+      resp["id"].should eq(205)
+      resp["result"]["command"].should_not be_nil
+      resp["result"]["command"]["title"].as_s.should contain("reference")
       client.close
     end
   end
@@ -5642,6 +5682,160 @@ describe Lsp::Crystal do
       result["items"].as_a.size.should be > 0
     ensure
       client.try(&.close)
+    end
+  end
+
+  describe "Snippet completions" do
+    it "returns new Crystal idiom snippets" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "desc")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 4, nil, nil, nil)
+      items = result.items
+      desc_snippet = items.find { |i| i.label == "describe" }
+      desc_snippet.should_not be_nil
+      desc_snippet.not_nil!.insert_text.not_nil!.should contain("describe")
+      desc_snippet.not_nil!.insert_text_format.should eq(2) # SNIPPET
+    end
+
+    it "returns spawn snippet" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "spa")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 3, nil, nil, nil)
+      items = result.items
+      spawn_snippet = items.find { |i| i.label == "spawn" }
+      spawn_snippet.should_not be_nil
+      spawn_snippet.not_nil!.insert_text.not_nil!.should contain("spawn do")
+    end
+
+    it "returns record snippet" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "rec")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 3, nil, nil, nil)
+      items = result.items
+      rec_snippet = items.find { |i| i.label == "record" && i.insert_text_format == 2 }
+      rec_snippet.should_not be_nil
+      rec_snippet.not_nil!.insert_text.not_nil!.should contain("record")
+    end
+
+    it "returns json_serializable snippet" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "json_s")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 6, nil, nil, nil)
+      items = result.items
+      json_snippet = items.find { |i| i.label == "json_serializable" }
+      json_snippet.should_not be_nil
+      json_snippet.not_nil!.insert_text.not_nil!.should contain("JSON::Serializable")
+    end
+
+    it "returns enum snippet" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "enu")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 3, nil, nil, nil)
+      items = result.items
+      enum_snippet = items.find { |i| i.label == "enum" && i.insert_text_format == 2 }
+      enum_snippet.should_not be_nil
+      enum_snippet.not_nil!.insert_text.not_nil!.should contain("enum ${1:Name}")
+    end
+  end
+
+  describe "Providers::Formatting range" do
+    it "formats only lines within range" do
+      code = "def foo\n1+1\n2+2\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 1, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 1, character: 3)
+      )
+      edits = Lsp::Crystal::Providers::Formatting.run_range(doc, range)
+      edits.should_not be_nil
+      # Should only contain edit for line 1
+      edits.not_nil!.all? { |e| e.range.start.line == 1 }.should be_true
+    end
+
+    it "returns nil when range is already formatted" do
+      code = "def foo\n  1 + 1\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 1, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 1, character: 7)
+      )
+      edits = Lsp::Crystal::Providers::Formatting.run_range(doc, range)
+      edits.should be_nil
+    end
+  end
+
+  describe "Providers::Formatting on-type" do
+    it "indents after block opener on newline" do
+      code = "def foo\n\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      edits = Lsp::Crystal::Providers::Formatting.run_on_type(doc, 1, 0, "\n")
+      edits.should_not be_nil
+      edits.not_nil![0].new_text.should start_with("  ")
+    end
+
+    it "does not indent after non-block line" do
+      code = "x = 1\n\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      edits = Lsp::Crystal::Providers::Formatting.run_on_type(doc, 1, 0, "\n")
+      edits.should be_nil
+    end
+
+    it "dedents end to match block opener" do
+      code = "def foo\n    end\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      edits = Lsp::Crystal::Providers::Formatting.run_on_type(doc, 1, 7, "d")
+      edits.should_not be_nil
+      edits.not_nil![0].new_text.should eq("end")
+    end
+
+    it "does not dedent end when already correctly indented" do
+      code = "def foo\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      edits = Lsp::Crystal::Providers::Formatting.run_on_type(doc, 1, 3, "d")
+      edits.should be_nil
+    end
+  end
+
+  describe "Range formatting handler integration" do
+    it "formats range via textDocument/rangeFormatting" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/rfmt.cr", languageId: "crystal", version: 1, text: "def foo\n1+1\nend\n"},
+      })
+      Fiber.yield
+
+      client.send_request(300, "textDocument/rangeFormatting", {
+        textDocument: {uri: "file:///tmp/rfmt.cr"},
+        range:        {start: {line: 0, character: 0}, end: {line: 2, character: 3}},
+        options:      {tabSize: 2, insertSpaces: true},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(300)
+      resp["result"].as_a.should_not be_empty
+      client.close
+    end
+  end
+
+  describe "On-type formatting handler integration" do
+    it "returns edits via textDocument/onTypeFormatting" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/otfmt.cr", languageId: "crystal", version: 1, text: "def foo\n\n"},
+      })
+      Fiber.yield
+
+      client.send_request(301, "textDocument/onTypeFormatting", {
+        textDocument: {uri: "file:///tmp/otfmt.cr"},
+        position:     {line: 1, character: 0},
+        ch:           "\n",
+        options:      {tabSize: 2, insertSpaces: true},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(301)
+      # Should have indent edits
+      resp["result"].as_a.size.should be >= 1
+      client.close
     end
   end
 end

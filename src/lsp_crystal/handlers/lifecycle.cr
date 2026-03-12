@@ -25,7 +25,12 @@ module Lsp::Crystal::Handlers
           hoverProvider:              true,
           definitionProvider:         true,
           typeDefinitionProvider:     true,
-          documentFormattingProvider: true,
+          documentFormattingProvider:      true,
+          documentRangeFormattingProvider: true,
+          documentOnTypeFormattingProvider: {
+            firstTriggerCharacter: "\n",
+            moreTriggerCharacter:  ["d"],
+          },
           documentSymbolProvider:     true,
           signatureHelpProvider:      {
             triggerCharacters: ["(", ","],
@@ -47,7 +52,7 @@ module Lsp::Crystal::Handlers
           },
           callHierarchyProvider:    true,
           inlayHintProvider:        true,
-          codeLensProvider:         {resolveProvider: false},
+          codeLensProvider:         {resolveProvider: true},
           linkedEditingRangeProvider: true,
           typeHierarchyProvider:     true,
           executeCommandProvider:    {commands: ["crystal-lsp/expandMacro"]},

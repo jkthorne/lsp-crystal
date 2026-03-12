@@ -11,18 +11,25 @@ module Lsp::Crystal
       method = message.method
       return nil unless method
 
+      request_id = message.id
+      start_time = Time.instant
+
       if handler = @handlers[method]?
         begin
-          handler.call(@server, message)
+          result = handler.call(@server, message)
+          elapsed = Time.instant - start_time
+          Log.info &.emit("Request handled", method: method, request_id: request_id.to_s, duration_ms: elapsed.total_milliseconds.to_s)
+          result
         rescue ex
-          Log.error { "Handler error for #{method}: #{ex.message}" }
-          if id = message.id
+          elapsed = Time.instant - start_time
+          Log.error &.emit("Handler error", method: method, request_id: request_id.to_s, duration_ms: elapsed.total_milliseconds.to_s, error: ex.message || "unknown")
+          if id = request_id
             JSONRPC::Response.error(id, JSONRPC::ErrorCode::InternalError, ex.message || "Internal error")
           end
         end
       else
-        Log.debug { "Unhandled method: #{method}" }
-        if id = message.id
+        Log.debug &.emit("Unhandled method", method: method)
+        if id = request_id
           JSONRPC::Response.error(id, JSONRPC::ErrorCode::MethodNotFound, "Method not found: #{method}")
         end
       end

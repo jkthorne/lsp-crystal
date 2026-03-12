@@ -4,8 +4,23 @@ module Lsp::Crystal
     property language_id : String
     property version : Int32
     property content : String
+    # Cached symbol results, invalidated on content change
+    property cached_symbols : Array(Providers::DocumentSymbol::HierarchicalSymbolInfo)?
+    property cached_flat_symbols : Array(Providers::DocumentSymbol::SymbolInfo)?
+    @cached_version : Int32 = -1
 
     def initialize(@uri, @language_id, @version, @content)
+    end
+
+    def symbols_stale? : Bool
+      @cached_version != @version
+    end
+
+    def cache_symbols(hierarchical : Array(Providers::DocumentSymbol::HierarchicalSymbolInfo),
+                      flat : Array(Providers::DocumentSymbol::SymbolInfo)) : Nil
+      @cached_symbols = hierarchical
+      @cached_flat_symbols = flat
+      @cached_version = @version
     end
 
     def apply_change(range : Range?, text : String) : Nil

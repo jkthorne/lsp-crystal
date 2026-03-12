@@ -10,7 +10,14 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, [] of Providers::DocumentSymbol::HierarchicalSymbolInfo)
       end
 
+      # Use cached symbols if available and version matches
+      if !doc.symbols_stale? && (cached = doc.cached_symbols)
+        return JSONRPC::Response.success(id, cached)
+      end
+
       symbols = Providers::DocumentSymbol.run(doc)
+      flat = Providers::DocumentSymbol.run_flat(doc)
+      doc.cache_symbols(symbols, flat)
       JSONRPC::Response.success(id, symbols)
     end
   end

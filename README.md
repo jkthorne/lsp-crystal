@@ -12,19 +12,21 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 - **Document Symbols** — Hierarchical outline of classes, methods, macros, properties, constants, and more
 - **Workspace Symbols** — Search symbols across all `.cr` files in the project
 - **Call Hierarchy** — Incoming and outgoing call navigation
+- **Type Hierarchy** — Browse supertypes and subtypes for classes, structs, and modules
 
 ### Editing
 - **Completion** — Keywords, snippets, and context-aware dot-completion (trigger: `.`, `:`, `@`)
 - **Signature Help** — Method signature display with active parameter tracking (trigger: `(`, `,`)
 - **Hover** — Type information and documentation comments via `crystal tool context`
 - **Rename** — Type-aware workspace-wide symbol renaming with prepare support
-- **Code Actions** — Quick fix for unused variables, organize/sort requires, extract variable/method
+- **Code Actions** — Quick fix for unused variables, generate method stubs, add missing requires, organize/sort requires, extract variable/method, convert to multi-line block
+- **Linked Editing** — Simultaneous editing of block keywords and their matching `end`
 - **Formatting** — Code formatting via `crystal tool format`
 - **Inlay Hints** — Inline type annotations for variables and parameters
 - **Code Lens** — Reference counts above methods and classes
 
 ### Code Intelligence
-- **Diagnostics** — Real-time error and warning reporting via `crystal build --no-codegen` with 500ms debounce
+- **Diagnostics** — Real-time error and warning reporting via `crystal build --no-codegen` with 500ms debounce, configurable severity filtering and pattern suppression
 - **Semantic Tokens** — Token-level syntax highlighting for keywords, types, strings, comments, and variables
 - **Document Highlight** — Highlight all occurrences of a symbol with read/write classification
 - **Folding Ranges** — Fold blocks, consecutive requires, and comment sections

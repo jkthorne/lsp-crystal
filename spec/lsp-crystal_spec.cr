@@ -4247,4 +4247,95 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  describe "Providers::TypeHierarchy" do
+    it "prepares type hierarchy for class with superclass" do
+      code = "class Foo < Bar\n  def hello\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      items = Lsp::Crystal::Providers::TypeHierarchy.prepare(doc, 0, 7)
+      items.size.should eq(1)
+      items[0].name.should eq("Foo")
+      items[0].data.should_not be_nil
+      items[0].data.not_nil!["superclass"].as_s.should eq("Bar")
+    end
+
+    it "prepares type hierarchy for module" do
+      code = "module MyModule\n  def hello\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      items = Lsp::Crystal::Providers::TypeHierarchy.prepare(doc, 0, 8)
+      items.size.should eq(1)
+      items[0].name.should eq("MyModule")
+    end
+
+    it "returns empty for non-type line" do
+      code = "x = 42\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      items = Lsp::Crystal::Providers::TypeHierarchy.prepare(doc, 0, 0)
+      items.should be_empty
+    end
+
+    it "detects includes in type body" do
+      code = "class Foo\n  include Bar\n  include Baz\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      items = Lsp::Crystal::Providers::TypeHierarchy.prepare(doc, 0, 2)
+      items.size.should eq(1)
+      items[0].data.should_not be_nil
+      includes = items[0].data.not_nil!["includes"].as_a.map(&.as_s)
+      includes.should eq(["Bar", "Baz"])
+    end
+
+    it "returns empty supertypes when no data" do
+      item = Lsp::Crystal::Providers::TypeHierarchy::TypeHierarchyItem.new(
+        name: "Foo",
+        kind: 5,
+        uri: "file:///test.cr",
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 0, character: 0),
+          end_pos: Lsp::Crystal::Position.new(line: 0, character: 3)
+        ),
+        selection_range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 0, character: 0),
+          end_pos: Lsp::Crystal::Position.new(line: 0, character: 3)
+        )
+      )
+      results = Lsp::Crystal::Providers::TypeHierarchy.supertypes(item, nil)
+      results.should be_empty
+    end
+  end
+
+  describe "TypeHierarchy handler integration" do
+    it "handles textDocument/prepareTypeHierarchy" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {
+          uri:        "file:///tmp/test_th.cr",
+          languageId: "crystal",
+          version:    1,
+          text:       "class Foo < Bar\nend\n",
+        },
+      })
+      Fiber.yield
+
+      client.send_request(20, "textDocument/prepareTypeHierarchy", {
+        textDocument: {uri: "file:///tmp/test_th.cr"},
+        position:     {line: 0, character: 7},
+      })
+      resp = client.read_response
+      result = resp["result"].as_a
+      result.size.should eq(1)
+      result[0]["name"].as_s.should eq("Foo")
+      client.close
+    end
+
+    it "advertises typeHierarchyProvider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+      caps = resp["result"]["capabilities"]
+      caps["typeHierarchyProvider"].should eq(true)
+      client.close
+    end
+  end
 end

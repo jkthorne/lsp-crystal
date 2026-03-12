@@ -167,6 +167,11 @@ module Lsp::Crystal
       @handlers["textDocument/inlayHint"] = Handler.new { |server, msg| Handlers::InlayHints.handle(server, msg) }
       @handlers["textDocument/codeLens"] = Handler.new { |server, msg| Handlers::CodeLens.handle(server, msg) }
 
+      # Type Hierarchy
+      @handlers["textDocument/prepareTypeHierarchy"] = Handler.new { |server, msg| Handlers::TypeHierarchy.prepare(server, msg) }
+      @handlers["typeHierarchy/supertypes"] = Handler.new { |server, msg| Handlers::TypeHierarchy.supertypes(server, msg) }
+      @handlers["typeHierarchy/subtypes"] = Handler.new { |server, msg| Handlers::TypeHierarchy.subtypes(server, msg) }
+
       # Linked Editing Range
       @handlers["textDocument/linkedEditingRange"] = Handler.new { |server, msg| Handlers::LinkedEditingRange.handle(server, msg) }
 

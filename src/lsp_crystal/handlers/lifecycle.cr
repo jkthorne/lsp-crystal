@@ -49,6 +49,7 @@ module Lsp::Crystal::Handlers
           inlayHintProvider:        true,
           codeLensProvider:         {resolveProvider: false},
           linkedEditingRangeProvider: true,
+          typeHierarchyProvider:     true,
         },
         serverInfo: {
           name:    "crystal-lsp",

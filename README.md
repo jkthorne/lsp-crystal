@@ -16,16 +16,16 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 - **Document Links** — Clickable `require` paths that navigate to the resolved file
 
 ### Editing
-- **Completion** — Keywords, snippets, and context-aware dot-completion (trigger: `.`, `:`, `@`)
+- **Completion** — Keywords, 21 snippets (Crystal idioms, spec blocks, JSON::Serializable boilerplate), and context-aware dot-completion (trigger: `.`, `:`, `@`), with lazy documentation resolution
 - **Signature Help** — Method signature display with active parameter tracking (trigger: `(`, `,`)
 - **Hover** — Type information and documentation comments via `crystal tool context`, with parallel tool dispatch for faster results
 - **Rename** — Type-aware workspace-wide symbol renaming with prepare support
 - **Code Actions** — Quick fix for unused variables, generate method stubs, add missing requires, organize/sort requires, extract variable/method, convert to multi-line block, expand macro
 - **Linked Editing** — Simultaneous editing of block keywords and their matching `end`
 - **Formatting** — Code formatting via `crystal tool format` (full document and range)
-- **On-Type Formatting** — Auto-insert `end` after block-opening keywords
+- **On-Type Formatting** — Auto-indent after block-opening keywords, auto-dedent `end` to match its opener
 - **Inlay Hints** — Inline type annotations for variables and parameters
-- **Code Lens** — Reference counts above methods and classes
+- **Code Lens** — Reference counts above methods and classes, lazily resolved for fast initial display
 
 ### Code Intelligence
 - **Diagnostics** — Real-time error and warning reporting via `crystal build --no-codegen` with 500ms debounce, configurable severity filtering and pattern suppression

@@ -50,15 +50,17 @@ module Lsp::Crystal::Handlers
       Log.debug { "Saved: #{uri}" }
 
       # Update content if included
+      path = URI.uri_to_path(uri)
       if text = params["text"]?.try(&.as_s?)
         if doc = server.document_store.get(uri)
           doc.content = text
           server.workspace_index.invalidate_content(doc.path, text)
         end
+        server.require_graph.update_file(path, text)
       else
         # Re-read from disk on save
-        path = URI.uri_to_path(uri)
         server.workspace_index.invalidate(path)
+        server.require_graph.update_file(path)
       end
 
       server.schedule_diagnostics(uri)

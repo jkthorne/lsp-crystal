@@ -13,6 +13,7 @@ module Lsp::Crystal
     getter workspace_folders : Array(String)
     getter request_tracker : RequestTracker
     getter ast_cache : AST::Cache
+    getter require_graph : RequireGraph
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
@@ -33,6 +34,7 @@ module Lsp::Crystal
       @workspace_folders = [] of String
       @request_tracker = RequestTracker.new
       @ast_cache = AST::Cache.new
+      @require_graph = RequireGraph.new
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new
@@ -178,10 +180,11 @@ module Lsp::Crystal
 
       Log.info { "Workspace root: #{root}" }
 
-      # Background-index the workspace
+      # Background-index the workspace and build require graph
       spawn do
         send_progress_begin("indexing", "Indexing workspace...")
         @workspace_index.index(root)
+        @require_graph.build(root)
         send_progress_end("indexing")
       end
     end

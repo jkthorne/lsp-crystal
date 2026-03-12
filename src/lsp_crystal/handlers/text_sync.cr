@@ -34,12 +34,9 @@ module Lsp::Crystal::Handlers
       if doc
         server.workspace_index.invalidate_content(doc.path, doc.content)
 
-        # Tier 1: Instant syntax diagnostics (ms) — published immediately
+        # Tier 1: Instant syntax diagnostics (ms) — published with diffing
         syntax_diags = Providers::Diagnostics.check_syntax(doc.content, doc.path)
-        server.send_notification("textDocument/publishDiagnostics", {
-          uri:         uri,
-          diagnostics: syntax_diags,
-        })
+        server.publish_diagnostics_if_changed(uri, syntax_diags)
       end
 
       # Tier 2: Full diagnostics via crystal build (debounced)
@@ -80,6 +77,7 @@ module Lsp::Crystal::Handlers
       server.workspace_index.invalidate(path)
 
       # Clear diagnostics for closed file
+      server.clear_published_diagnostics(uri)
       server.send_notification("textDocument/publishDiagnostics", {uri: uri, diagnostics: [] of Nil})
       nil
     end

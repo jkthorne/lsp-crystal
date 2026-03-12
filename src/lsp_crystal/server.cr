@@ -19,6 +19,8 @@ module Lsp::Crystal
     @pending_mutex : Mutex
     @diagnostics_hashes : Hash(String, UInt64)
     @diagnostics_hashes_mutex : Mutex
+    @published_diagnostics : Hash(String, Array(Providers::Diagnostics::Diagnostic))
+    @published_diagnostics_mutex : Mutex
     @active_uri : String?
     @next_request_id : Atomic(Int64)
 
@@ -34,6 +36,8 @@ module Lsp::Crystal
       @pending_mutex = Mutex.new
       @diagnostics_hashes = Hash(String, UInt64).new
       @diagnostics_hashes_mutex = Mutex.new
+      @published_diagnostics = Hash(String, Array(Providers::Diagnostics::Diagnostic)).new
+      @published_diagnostics_mutex = Mutex.new
       @next_request_id = Atomic(Int64).new(1_i64)
       @shutdown_channel = Channel(Nil).new(1)
       spawn_diagnostics_worker
@@ -110,6 +114,43 @@ module Lsp::Crystal
       @diagnostics_hashes_mutex.synchronize do
         @diagnostics_hashes.delete(uri)
       end
+    end
+
+    # Publish diagnostics only if they differ from last published set
+    def publish_diagnostics_if_changed(uri : String, diagnostics : Array(Providers::Diagnostics::Diagnostic)) : Nil
+      @published_diagnostics_mutex.synchronize do
+        cached = @published_diagnostics[uri]?
+        if cached && diagnostics_equal?(cached, diagnostics)
+          Log.debug { "Skipping publish for #{uri} (diagnostics unchanged)" }
+          return
+        end
+        @published_diagnostics[uri] = diagnostics
+      end
+      send_notification("textDocument/publishDiagnostics", {
+        uri:         uri,
+        diagnostics: diagnostics,
+      })
+    end
+
+    def clear_published_diagnostics(uri : String) : Nil
+      @published_diagnostics_mutex.synchronize do
+        @published_diagnostics.delete(uri)
+      end
+    end
+
+    private def diagnostics_equal?(a : Array(Providers::Diagnostics::Diagnostic), b : Array(Providers::Diagnostics::Diagnostic)) : Bool
+      return false unless a.size == b.size
+      a.each_with_index do |diag, i|
+        other = b[i]
+        return false unless diag.range.start.line == other.range.start.line &&
+                            diag.range.start.character == other.range.start.character &&
+                            diag.range.end_pos.line == other.range.end_pos.line &&
+                            diag.range.end_pos.character == other.range.end_pos.character &&
+                            diag.severity == other.severity &&
+                            diag.source == other.source &&
+                            diag.message == other.message
+      end
+      true
     end
 
     def detect_project(root_uri : String) : Nil
@@ -252,10 +293,7 @@ module Lsp::Crystal
       # Store hash after successful run
       @diagnostics_hashes_mutex.synchronize { @diagnostics_hashes[uri] = content_hash }
 
-      send_notification("textDocument/publishDiagnostics", {
-        uri:         uri,
-        diagnostics: diagnostics,
-      })
+      publish_diagnostics_if_changed(uri, diagnostics)
     rescue ex
       Log.error { "Diagnostics error for #{uri}: #{ex.message}" }
     end

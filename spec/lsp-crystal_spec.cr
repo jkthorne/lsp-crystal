@@ -946,16 +946,22 @@ describe Lsp::Crystal do
 
   describe "References handler integration" do
     it "returns references via textDocument/references" do
+      dir = File.tempname("ref_handler_test")
+      Dir.mkdir_p(dir)
+      uri = Lsp::Crystal::URI.path_to_uri(File.join(dir, "ref.cr"))
+
       client = TestClient.new
-      client.initialize_server
+      client.send_request(1, "initialize", {processId: 1, rootUri: Lsp::Crystal::URI.path_to_uri(dir), capabilities: {} of String => String})
+      client.read_response
+      client.send_notification("initialized")
 
       client.send_notification("textDocument/didOpen", {
-        textDocument: {uri: "file:///tmp/ref.cr", languageId: "crystal", version: 1, text: "xzqrefvar99 = 1\nputs xzqrefvar99\nxzqrefvar99 + 2\n"},
+        textDocument: {uri: uri, languageId: "crystal", version: 1, text: "xzqrefvar99 = 1\nputs xzqrefvar99\nxzqrefvar99 + 2\n"},
       })
       Fiber.yield
 
       client.send_request(90, "textDocument/references", {
-        textDocument: {uri: "file:///tmp/ref.cr"},
+        textDocument: {uri: uri},
         position:     {line: 0, character: 0},
         context:      {includeDeclaration: true},
       })
@@ -965,6 +971,8 @@ describe Lsp::Crystal do
       refs = resp["result"].as_a
       refs.size.should eq(3)
       client.close
+    ensure
+      FileUtils.rm_rf(dir) if dir
     end
   end
 
@@ -2087,7 +2095,7 @@ describe Lsp::Crystal do
       caps = resp["result"]["capabilities"]
 
       caps["semanticTokensProvider"].should_not be_nil
-      caps["semanticTokensProvider"]["full"].should eq(true)
+      caps["semanticTokensProvider"]["full"]["delta"].should eq(true)
       legend = caps["semanticTokensProvider"]["legend"]
       legend["tokenTypes"].as_a.size.should be > 0
       legend["tokenModifiers"].as_a.size.should be > 0
@@ -4435,6 +4443,553 @@ describe Lsp::Crystal do
       actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, [diag])
       prefix_action = actions.find { |a| a.title.includes?("underscore") }
       prefix_action.should_not be_nil
+    end
+  end
+
+  # ── Feature: Semantic Tokens Delta ──────────────────────────────────
+
+  describe "Providers::SemanticTokens::TokenCache" do
+    it "stores and retrieves entries by URI and resultId" do
+      cache = Lsp::Crystal::Providers::SemanticTokens::TokenCache.new
+      data = [0, 0, 5, 10, 0]
+      result_id = cache.store("file:///a.cr", data, 1)
+      result_id.should_not be_empty
+
+      entry = cache.get("file:///a.cr", result_id)
+      entry.should_not be_nil
+      entry.not_nil!.data.should eq(data)
+      entry.not_nil!.version.should eq(1)
+    end
+
+    it "returns nil for stale resultId" do
+      cache = Lsp::Crystal::Providers::SemanticTokens::TokenCache.new
+      id1 = cache.store("file:///a.cr", [0, 0, 5, 10, 0], 1)
+      id2 = cache.store("file:///a.cr", [0, 0, 3, 6, 0], 2)
+
+      cache.get("file:///a.cr", id1).should be_nil
+      cache.get("file:///a.cr", id2).should_not be_nil
+    end
+
+    it "invalidates entries" do
+      cache = Lsp::Crystal::Providers::SemanticTokens::TokenCache.new
+      id = cache.store("file:///a.cr", [0, 0, 5, 10, 0], 1)
+      cache.invalidate("file:///a.cr")
+      cache.get("file:///a.cr", id).should be_nil
+    end
+
+    it "returns nil for unknown URI" do
+      cache = Lsp::Crystal::Providers::SemanticTokens::TokenCache.new
+      cache.get("file:///unknown.cr", "999").should be_nil
+    end
+  end
+
+  describe "TokenCache.compute_edits" do
+    it "returns empty edits for identical data" do
+      data = [0, 0, 5, 10, 0, 1, 0, 3, 6, 0]
+      edits = Lsp::Crystal::Providers::SemanticTokens::TokenCache.compute_edits(data, data)
+      edits.should be_empty
+    end
+
+    it "computes edit for appended tokens" do
+      old_data = [0, 0, 5, 10, 0]
+      new_data = [0, 0, 5, 10, 0, 1, 0, 3, 6, 0]
+      edits = Lsp::Crystal::Providers::SemanticTokens::TokenCache.compute_edits(old_data, new_data)
+      edits.size.should eq(1)
+      edit = edits[0]
+      edit.start.should eq(5)
+      edit.delete_count.should eq(0)
+      edit.data.should eq([1, 0, 3, 6, 0])
+    end
+
+    it "computes edit for removed tokens" do
+      old_data = [0, 0, 5, 10, 0, 1, 0, 3, 6, 0]
+      new_data = [0, 0, 5, 10, 0]
+      edits = Lsp::Crystal::Providers::SemanticTokens::TokenCache.compute_edits(old_data, new_data)
+      edits.size.should eq(1)
+      edit = edits[0]
+      edit.start.should eq(5)
+      edit.delete_count.should eq(5)
+    end
+
+    it "computes edit for changed middle token" do
+      old_data = [0, 0, 5, 10, 0, 1, 0, 3, 6, 0, 2, 0, 4, 7, 0]
+      new_data = [0, 0, 5, 10, 0, 1, 0, 9, 6, 0, 2, 0, 4, 7, 0]
+      edits = Lsp::Crystal::Providers::SemanticTokens::TokenCache.compute_edits(old_data, new_data)
+      edits.size.should eq(1)
+      edit = edits[0]
+      edit.start.should eq(5)
+      edit.delete_count.should eq(5)
+      edit.data.should eq([1, 0, 9, 6, 0])
+    end
+  end
+
+  describe "SemanticTokens handler delta" do
+    it "full returns resultId" do
+      client = TestClient.new
+      client.initialize_server
+
+      code = "x = 1\n"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/st_delta.cr", languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(10, "textDocument/semanticTokens/full", {
+        textDocument: {uri: "file:///tmp/st_delta.cr"},
+      })
+      resp = client.read_response
+      resp["result"]["resultId"].should_not be_nil
+      resp["result"]["data"].as_a.size.should be > 0
+      client.close
+    end
+
+    it "delta returns edits when previous resultId is valid" do
+      client = TestClient.new
+      client.initialize_server
+
+      code = "x = 1\n"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/st_delta2.cr", languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      # Get full tokens
+      client.send_request(10, "textDocument/semanticTokens/full", {
+        textDocument: {uri: "file:///tmp/st_delta2.cr"},
+      })
+      resp = client.read_response
+      result_id = resp["result"]["resultId"].as_s
+
+      # Request delta with previous resultId
+      client.send_request(11, "textDocument/semanticTokens/full/delta", {
+        textDocument:     {uri: "file:///tmp/st_delta2.cr"},
+        previousResultId: result_id,
+      })
+      resp2 = client.read_response
+      resp2["result"]["resultId"].should_not be_nil
+      # Should have either edits or data
+      result = resp2["result"]
+      has_response = result["edits"]? || result["data"]?
+      has_response.should_not be_nil
+      client.close
+    end
+
+    it "delta falls back to full when previousResultId is stale" do
+      client = TestClient.new
+      client.initialize_server
+
+      code = "x = 1\n"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/st_delta3.cr", languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(10, "textDocument/semanticTokens/full/delta", {
+        textDocument:     {uri: "file:///tmp/st_delta3.cr"},
+        previousResultId: "nonexistent",
+      })
+      resp = client.read_response
+      resp["result"]["data"].should_not be_nil
+      resp["result"]["resultId"].should_not be_nil
+      client.close
+    end
+  end
+
+  # ── Feature: Macro-Aware Intelligence ───────────────────────────────
+
+  describe "Providers::MacroExpander" do
+    it "expands property into getter and setter" do
+      methods = Lsp::Crystal::Providers::MacroExpander.expand("property", ["name"], ["String"], "MyClass")
+      methods.size.should eq(2)
+      getter = methods.find { |m| m.name == "name" }
+      getter.should_not be_nil
+      getter.not_nil!.kind.getter?.should be_true
+      getter.not_nil!.type.should eq("String")
+
+      setter = methods.find { |m| m.name == "name=" }
+      setter.should_not be_nil
+      setter.not_nil!.kind.setter?.should be_true
+    end
+
+    it "expands property? into bool getter and setter" do
+      methods = Lsp::Crystal::Providers::MacroExpander.expand("property?", ["active"], [nil], "Foo")
+      methods.size.should eq(2)
+      getter = methods.find { |m| m.name == "active?" }
+      getter.should_not be_nil
+      getter.not_nil!.type.should eq("Bool")
+
+      setter = methods.find { |m| m.name == "active=" }
+      setter.should_not be_nil
+    end
+
+    it "expands getter into getter only" do
+      methods = Lsp::Crystal::Providers::MacroExpander.expand("getter", ["value"], ["Int32"])
+      methods.size.should eq(1)
+      methods[0].name.should eq("value")
+      methods[0].kind.getter?.should be_true
+    end
+
+    it "expands setter into setter only" do
+      methods = Lsp::Crystal::Providers::MacroExpander.expand("setter", ["count"], ["Int32"])
+      methods.size.should eq(1)
+      methods[0].name.should eq("count=")
+      methods[0].kind.setter?.should be_true
+    end
+
+    it "expands record into getters and initialize" do
+      methods = Lsp::Crystal::Providers::MacroExpander.expand("record", ["Point", "x", "y"], [nil, "Int32", "Int32"])
+      methods.any? { |m| m.name == "x" && m.kind.getter? }.should be_true
+      methods.any? { |m| m.name == "y" && m.kind.getter? }.should be_true
+      methods.any? { |m| m.name == "initialize" }.should be_true
+    end
+
+    it "generates hover info" do
+      info = Lsp::Crystal::Providers::MacroExpander.hover_info("property", ["name"], ["String"])
+      info.should_not be_nil
+      info.not_nil!.should contain("def name")
+      info.not_nil!.should contain("def name=")
+    end
+
+    it "identifies known macros" do
+      Lsp::Crystal::Providers::MacroExpander.known_macro?("property").should be_true
+      Lsp::Crystal::Providers::MacroExpander.known_macro?("getter").should be_true
+      Lsp::Crystal::Providers::MacroExpander.known_macro?("setter").should be_true
+      Lsp::Crystal::Providers::MacroExpander.known_macro?("record").should be_true
+      Lsp::Crystal::Providers::MacroExpander.known_macro?("puts").should be_false
+    end
+  end
+
+  describe "Macro-aware document symbols" do
+    it "includes setter methods for property macros" do
+      code = "class Foo\n  property name : String\nend\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::SymbolVisitor.new
+      result.node.not_nil!.accept(visitor)
+
+      foo = visitor.root_symbols.find { |s| s.name == "Foo" }
+      foo.should_not be_nil
+      children = foo.not_nil!.children
+      children.any? { |c| c.name == "name" }.should be_true
+      children.any? { |c| c.name == "name=" }.should be_true
+    end
+
+    it "includes setter for setter macro" do
+      code = "class Bar\n  setter age : Int32\nend\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::SymbolVisitor.new
+      result.node.not_nil!.accept(visitor)
+
+      bar = visitor.root_symbols.find { |s| s.name == "Bar" }
+      bar.should_not be_nil
+      bar.not_nil!.children.any? { |c| c.name == "age=" }.should be_true
+    end
+
+    it "does not add setter for getter macro" do
+      code = "class Baz\n  getter value : Int32\nend\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::SymbolVisitor.new
+      result.node.not_nil!.accept(visitor)
+
+      baz = visitor.root_symbols.find { |s| s.name == "Baz" }
+      baz.should_not be_nil
+      baz.not_nil!.children.any? { |c| c.name == "value=" }.should be_false
+      baz.not_nil!.children.any? { |c| c.name == "value" }.should be_true
+    end
+  end
+
+  describe "Macro-aware completion" do
+    it "includes setter in document symbol completions for property" do
+      code = "class Foo\n  property name : String\nend\nna"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::Completion.run(doc, 3, 2)
+      items = result.items
+      items.any? { |i| i.label == "name" }.should be_true
+      items.any? { |i| i.label == "name=" }.should be_true
+    end
+  end
+
+  describe "Macro hover" do
+    it "shows expansion info when hovering on property keyword" do
+      code = "class Foo\n  property name : String\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      # Hover on the 'property' keyword at line 1, col 4
+      result = Lsp::Crystal::Providers::Hover.run(doc, 1, 4)
+      result.should_not be_nil
+      result.not_nil!.contents.value.should contain("Expands to")
+      result.not_nil!.contents.value.should contain("name=")
+    end
+  end
+
+  # ── Feature: Cross-File AST Index ───────────────────────────────────
+
+  describe "AST::IndexVisitor" do
+    it "produces symbols with correct FQN" do
+      code = "module Foo\n  class Bar\n    def baz\n    end\n  end\nend\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::IndexVisitor.new("file:///test.cr")
+      result.node.not_nil!.accept(visitor)
+
+      syms = visitor.symbols
+      syms.any? { |s| s.fqn == "Foo" && s.name == "Foo" }.should be_true
+      syms.any? { |s| s.fqn == "Foo::Bar" && s.name == "Bar" }.should be_true
+      syms.any? { |s| s.fqn == "Foo::Bar#baz" && s.name == "baz" }.should be_true
+    end
+
+    it "produces references for identifiers" do
+      code = "x = 1\nputs x\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::IndexVisitor.new("file:///test.cr")
+      result.node.not_nil!.accept(visitor)
+
+      refs = visitor.references
+      x_refs = refs.select { |r| r.name == "x" }
+      x_refs.size.should be >= 2
+      x_refs.any? { |r| r.kind.write? }.should be_true
+      x_refs.any? { |r| r.kind.read? }.should be_true
+    end
+
+    it "tracks superclass" do
+      code = "class Child < Parent\nend\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::IndexVisitor.new("file:///test.cr")
+      result.node.not_nil!.accept(visitor)
+
+      child = visitor.symbols.find { |s| s.name == "Child" }
+      child.should_not be_nil
+      child.not_nil!.superclass.should eq("Parent")
+    end
+
+    it "tracks includes" do
+      code = "class Foo\n  include Bar\n  include Baz\nend\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::IndexVisitor.new("file:///test.cr")
+      result.node.not_nil!.accept(visitor)
+
+      foo = visitor.symbols.find { |s| s.name == "Foo" }
+      foo.should_not be_nil
+      foo.not_nil!.includes.should_not be_nil
+      foo.not_nil!.includes.not_nil!.should contain("Bar")
+      foo.not_nil!.includes.not_nil!.should contain("Baz")
+    end
+
+    it "indexes constants" do
+      code = "VERSION = \"1.0\"\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::IndexVisitor.new("file:///test.cr")
+      result.node.not_nil!.accept(visitor)
+
+      visitor.symbols.any? { |s| s.name == "VERSION" && s.kind == Lsp::Crystal::Providers::DocumentSymbol::SymbolKind::Constant.value }.should be_true
+    end
+
+    it "indexes macro-generated methods" do
+      code = "class Foo\n  property name : String\nend\n"
+      result = Lsp::Crystal::AST.parse(code)
+      result.success?.should be_true
+
+      visitor = Lsp::Crystal::AST::IndexVisitor.new("file:///test.cr")
+      result.node.not_nil!.accept(visitor)
+
+      syms = visitor.symbols
+      syms.any? { |s| s.name == "name" && s.fqn == "Foo#name" }.should be_true
+      syms.any? { |s| s.name == "name=" && s.fqn == "Foo#name=" }.should be_true
+    end
+  end
+
+  describe "AST::Index" do
+    it "indexes files and finds definitions" do
+      dir = File.tempname("ast_index_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Greeter\n  def greet\n  end\nend\n")
+      File.write(File.join(dir, "b.cr"), "class Runner\n  def run\n    Greeter.new.greet\n  end\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+      index.indexed?.should be_true
+      index.file_count.should eq(2)
+
+      defs = index.find_definitions("Greeter")
+      defs.size.should be >= 1
+      defs.any? { |uri, _| uri.includes?("a.cr") }.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "finds cross-file references" do
+      dir = File.tempname("ast_index_refs")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Greeter\n  def greet\n  end\nend\n")
+      File.write(File.join(dir, "b.cr"), "class Runner\n  def run\n    Greeter.new.greet\n  end\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      refs = index.find_references("greet")
+      refs.size.should be >= 2
+      # Definition in a.cr + call in b.cr
+      refs.any? { |r| r.uri.includes?("a.cr") }.should be_true
+      refs.any? { |r| r.uri.includes?("b.cr") }.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "searches symbols by query" do
+      dir = File.tempname("ast_index_search")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class FooBar\nend\nclass FooBaz\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      results = index.search_symbols("Foo")
+      results.size.should eq(2)
+      results.any? { |_, s| s.name == "FooBar" }.should be_true
+      results.any? { |_, s| s.name == "FooBaz" }.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "handles incremental updates" do
+      dir = File.tempname("ast_index_incr")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Old\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      defs = index.find_definitions("Old")
+      defs.size.should eq(1)
+
+      # Update the file
+      uri = Lsp::Crystal::URI.path_to_uri(File.join(dir, "a.cr"))
+      index.index_file(uri, "class New\nend\n")
+
+      index.find_definitions("Old").size.should eq(0)
+      index.find_definitions("New").size.should eq(1)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "removes files from index" do
+      dir = File.tempname("ast_index_rm")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Gone\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+      index.find_definitions("Gone").size.should eq(1)
+
+      uri = Lsp::Crystal::URI.path_to_uri(File.join(dir, "a.cr"))
+      index.remove_file(uri)
+      index.find_definitions("Gone").size.should eq(0)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "handles re-opened classes across files" do
+      dir = File.tempname("ast_index_reopen")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class MyClass\n  def method_a\n  end\nend\n")
+      File.write(File.join(dir, "b.cr"), "class MyClass\n  def method_b\n  end\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      defs = index.find_definitions("MyClass")
+      defs.size.should eq(2)
+      defs.any? { |uri, _| uri.includes?("a.cr") }.should be_true
+      defs.any? { |uri, _| uri.includes?("b.cr") }.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "gracefully handles files with syntax errors" do
+      dir = File.tempname("ast_index_err")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "good.cr"), "class Good\nend\n")
+      File.write(File.join(dir, "bad.cr"), "class Bad\n  def broken(\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      # Good file should be indexed
+      index.find_definitions("Good").size.should eq(1)
+      # Bad file should be skipped gracefully
+      index.file_count.should eq(1)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "produces correct FQN for deeply nested modules" do
+      dir = File.tempname("ast_index_nested")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "module A\n  module B\n    class C\n      def d\n      end\n    end\n  end\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      results = index.search_symbols("")
+      results.any? { |_, s| s.fqn == "A" }.should be_true
+      results.any? { |_, s| s.fqn == "A::B" }.should be_true
+      results.any? { |_, s| s.fqn == "A::B::C" }.should be_true
+      results.any? { |_, s| s.fqn == "A::B::C#d" }.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
+
+  describe "AST Index integration with providers" do
+    it "definition provider uses AST index for instant results" do
+      dir = File.tempname("def_index_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "models.cr"), "class User\n  def name\n    \"test\"\n  end\nend\n")
+      File.write(File.join(dir, "service.cr"), "class Service\n  def run\n    User.new.name\n  end\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      # Create doc for service.cr and look up "User"
+      content = File.read(File.join(dir, "service.cr"))
+      doc = Lsp::Crystal::Document.new(
+        Lsp::Crystal::URI.path_to_uri(File.join(dir, "service.cr")),
+        "crystal", 1, content
+      )
+      # "User" is at line 2 col 4
+      locations = Lsp::Crystal::Providers::Definition.run(doc, 2, 4, index)
+      locations.size.should be >= 1
+      locations.any? { |l| l.uri.includes?("models.cr") }.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "workspace symbol uses AST index with hierarchy" do
+      dir = File.tempname("ws_sym_index")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "module Outer\n  class Inner\n    def method\n    end\n  end\nend\n")
+
+      index = Lsp::Crystal::AST::Index.new
+      index.index_workspace(dir)
+
+      results = Lsp::Crystal::Providers::WorkspaceSymbol.run_ast_indexed(index, "Inner")
+      results.size.should be >= 1
+      results.any? { |s| s.name == "Inner" }.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
     end
   end
 end

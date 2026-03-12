@@ -2,8 +2,8 @@
 
 ## Current State
 
-- **7,088 LOC** source across 74 files, **4,610 LOC** specs, **313 passing tests**
-- 22 providers, 26 handlers, 4 AST visitors, 0 external dependencies
+- **8,082 LOC** source across 77 files, **5,169 LOC** specs, **352 passing tests**
+- 23 providers, 26 handlers, 5 AST visitors, 0 external dependencies
 - Crystal >= 1.19.1, stdlib only (includes `compiler/crystal/syntax`)
 - MIT licensed, CI on Crystal latest + nightly
 
@@ -23,14 +23,15 @@ Handlers (26 files — extract params, call provider, format response)
 Providers (22 files — business logic)
     ├─ CrystalTool (compiler invocations, 30s timeout, cancellation)
     ├─ DocumentStore (in-memory incremental editing)
-    ├─ AST subsystem (parser, cache, lexer tokenizer, 4 visitors)
+    ├─ AST subsystem (parser, cache, lexer tokenizer, 5 visitors)
+    ├─ AST::Index (persistent cross-file symbol index, background parsing)
     ├─ WorkspaceIndex (background indexing, regex symbol search)
     └─ RequireGraph (dependency edges, BFS transitive dependents)
 ```
 
 **Concurrency model:** Main fiber reads stdin synchronously. Slow methods (definition, hover, formatting, rename, diagnostics) run in spawned fibers with `CancellationToken` support. Diagnostics use mutex-protected channel-based debouncing (500ms default).
 
-**AST integration:** Per-document AST cache keyed by URI + version. Two-tier diagnostics: instant syntax errors via `Crystal::Parser`, debounced full build via `crystal build --no-codegen`. All AST-enhanced providers fall back to regex on parse failure.
+**AST integration:** Per-document AST cache keyed by URI + version. Persistent cross-file AST index parses all workspace `.cr` files at startup (batched, ~1ms/file) and updates incrementally on edits. Two-tier diagnostics: instant syntax errors via `Crystal::Parser`, debounced full build via `crystal build --no-codegen`. All AST-enhanced providers fall back to regex on parse failure.
 
 ---
 
@@ -45,7 +46,7 @@ Providers (22 files — business logic)
 | Navigation | `definition`, `typeDefinition`, `implementation`, `references` |
 | Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `rangeFormatting`, `onTypeFormatting`, `codeAction`, `linkedEditingRange` |
 | Symbols | `documentSymbol`, `workspace/symbol` |
-| Intelligence | `semanticTokens/full`, `documentHighlight`, `foldingRange`, `selectionRange` |
+| Intelligence | `semanticTokens/full`, `semanticTokens/full/delta`, `documentHighlight`, `foldingRange`, `selectionRange` |
 | Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` |
 | Extras | `inlayHint`, `codeLens`, `codeLens/resolve`, `documentLink`, `documentColor`, `colorPresentation` |
 | Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles`, `window/workDoneProgress` |
@@ -58,7 +59,7 @@ Providers (22 files — business logic)
 | code_action | 486 | Unused var fix, method stub, add require, organize requires, extract variable/method, convert block |
 | completion | 360 | Keywords, snippets, context-aware dot-completion (`.`, `:`, `@` triggers) |
 | call_hierarchy | 354 | Incoming/outgoing calls, AST-based with regex fallback |
-| semantic_tokens | 290 | Lexer-based tokenization, 10+ token types |
+| semantic_tokens | 370 | Lexer-based tokenization, 10+ token types, delta encoding with token cache |
 | document_symbol | 228 | Hierarchical outline (classes, methods, macros, constants, properties) |
 | inlay_hints | 221 | Variable/parameter type annotations |
 | type_hierarchy | 211 | Supertypes/subtypes for classes, structs, modules |
@@ -68,14 +69,15 @@ Providers (22 files — business logic)
 | rename | 125 | Type-aware, AST-based with prepare support |
 | document_highlight | 123 | Read/write occurrence classification |
 | folding_range | 119 | Blocks, requires, comment sections |
-| references | 106 | AST in-document, regex cross-file |
-| hover | 103 | Type info + doc comments via crystal tool context |
+| references | 125 | AST in-document, AST index cross-file with regex fallback |
+| hover | 140 | Type info + doc comments, macro expansion info, AST index doc lookup |
 | type_definition | 102 | Navigate to variable/expression type |
 | linked_editing_range | 99 | Block keyword ↔ `end` simultaneous editing |
 | code_lens | 94 | Reference counts above methods/classes |
-| workspace_symbol | 59 | Cross-file regex symbol search |
+| macro_expander | 120 | Pattern-based expansion for property, getter, setter, record macros |
+| workspace_symbol | 73 | Cross-file symbol search via AST index with regex fallback |
 | implementation | 34 | Abstract type implementations |
-| definition | 34 | Via crystal tool implementations |
+| definition | 60 | AST index lookup with crystal tool fallback |
 | formatting | 20 | crystal tool format (full + range + on-type) |
 
 ### Infrastructure
@@ -104,6 +106,7 @@ Providers (22 files — business logic)
 | 8 | Incremental Diagnostics | Diagnostic diffing, multi-file routing, require graph, idle pre-compilation |
 | 9 | Medium Features | Severity config, linked editing, type hierarchy, enhanced code actions |
 | 10 | Low Features | Range formatting, on-type formatting, document links, color provider |
+| 11 | Advanced Intelligence | Semantic tokens delta, macro-aware intelligence, persistent cross-file AST index |
 
 ---
 
@@ -111,9 +114,9 @@ Providers (22 files — business logic)
 
 1. **No incremental compilation** — Each full diagnostic runs `crystal build --no-codegen` on the whole program. Content-hash caching, diagnostic diffing, and require-graph targeting reduce redundant work, but each invocation is still whole-program. Syntax errors are instant via `Crystal::Parser`.
 
-2. **Cross-file references use regex** — In-document references use AST (accurate), but cross-file search relies on the workspace index regex. Parsing every workspace file per request would be too slow without persistent cross-file AST state.
+2. **Cross-file references partially AST-based** — Cross-file references now use the persistent AST index for accurate results, with regex fallback when the index is not ready or for files that fail to parse. Complex overloaded methods may still require `crystal tool` for full resolution.
 
-3. **No macro expansion** — Crystal macros generate code at compile time. The LSP cannot expand macros, so macro-generated methods/types are invisible to navigation, completion, and symbols. Only `crystal tool` invocations (which run the compiler) can see through macros.
+3. **Macro expansion is pattern-based** — Common Crystal macros (`property`, `getter`, `setter`, `record`) are recognized and expanded via pattern matching. Arbitrary user-defined macros are not supported — only `crystal tool` invocations can expand those.
 
 4. **Single-project scope** — The server assumes one Crystal project per workspace root (detected via `shard.yml`). Multi-root workspaces with independent shards are not fully supported.
 
@@ -125,14 +128,11 @@ Providers (22 files — business logic)
 
 ### High Impact
 
-**Persistent cross-file AST index**
-Build and maintain an in-memory index of parsed ASTs for all workspace `.cr` files. This would enable accurate cross-file references, rename, and go-to-definition without shelling out to `crystal tool`. Update incrementally on file changes. This is the single biggest quality improvement possible — it would make most navigation instant and accurate.
+**Macro expansion Tier 2 — `crystal tool expand`**
+The current pattern-based macro expander handles common macros. A second tier could invoke `crystal tool expand` for arbitrary user-defined macros and feed results into the AST subsystem. This would cover the long tail of custom macros at the cost of a compiler invocation.
 
-**Macro-aware intelligence**
-Explore using `crystal tool expand` to expand macros and feed results into the AST subsystem. This would make macro-generated methods visible to completion, hover, and navigation. Challenging due to Crystal's compile-time macro system, but high value since macros are pervasive in Crystal code (e.g., `property`, `getter`, `JSON::Serializable`).
-
-**Semantic tokens delta**
-Implement `semanticTokens/full/delta` to send only changed token ranges on edits instead of the full token list. Reduces bandwidth and improves highlighting responsiveness on large files.
+**Incremental compilation / persistent compiler state**
+Explore maintaining a persistent Crystal compiler instance to avoid cold-start overhead on each `crystal tool` invocation. Would dramatically speed up definition, hover, and diagnostics for large projects.
 
 ### Medium Impact
 
@@ -168,10 +168,10 @@ Implement `textDocument/declaration` as distinct from definition, pointing to fo
 
 | Metric | Value |
 |--------|-------|
-| Source LOC | 7,088 |
-| Spec LOC | 4,610 |
-| Tests passing | 313 |
-| Tests failing | 1 (references count mismatch) |
+| Source LOC | 8,082 |
+| Spec LOC | 5,169 |
+| Tests passing | 352 |
+| Tests failing | 0 |
 | External deps | 0 |
 | Crystal version | >= 1.19.1 |
 | CI | GitHub Actions (latest + nightly) |

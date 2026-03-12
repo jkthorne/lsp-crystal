@@ -29,7 +29,9 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 
 ### Code Intelligence
 - **Diagnostics** — Real-time error and warning reporting via `crystal build --no-codegen` with 500ms debounce, configurable severity filtering and pattern suppression
-- **Semantic Tokens** — Token-level syntax highlighting for keywords, types, strings, comments, and variables
+- **Semantic Tokens** — Token-level syntax highlighting with delta encoding (only changed tokens sent on edits)
+- **Macro Intelligence** — Pattern-based expansion of `property`, `getter`, `setter`, and `record` macros — generated methods appear in completion, symbols, and hover
+- **Cross-File AST Index** — Persistent in-memory index of all workspace symbols, updated incrementally on edits. Powers instant cross-file references, go-to-definition, rename, and workspace symbol search without compiler invocations
 - **Document Highlight** — Highlight all occurrences of a symbol with read/write classification
 - **Folding Ranges** — Fold blocks, consecutive requires, and comment sections
 - **Selection Range** — Smart expand/shrink selection from word to block to document
@@ -99,8 +101,8 @@ Handlers (extract params, call provider, format response)
   |
 Providers (business logic)
   |
-CrystalTool          DocumentStore
-(spawns crystal)      (in-memory docs)
+CrystalTool      DocumentStore     AST::Index
+(spawns crystal)  (in-memory docs)  (cross-file symbols)
 ```
 
 Key design decisions:

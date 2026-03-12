@@ -26,7 +26,9 @@ module Lsp::Crystal
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new
+      @shutdown_channel = Channel(Nil).new(1)
       spawn_diagnostics_worker
+      install_signal_handlers
     end
 
     private def dispatcher : Dispatcher
@@ -54,6 +56,14 @@ module Lsp::Crystal
       rescue ex
         Log.error { "Unexpected error: #{ex.message}" }
       end
+    ensure
+      graceful_shutdown
+    end
+
+    def graceful_shutdown : Nil
+      Log.info { "Shutting down gracefully..." }
+      @diagnostics_channel.close rescue nil
+      Log.info { "Server stopped" }
     end
 
     def send_notification(method : String, params) : Nil
@@ -128,6 +138,21 @@ module Lsp::Crystal
         token: token,
         value: {kind: "end", message: message},
       })
+    end
+
+    private def install_signal_handlers
+      Signal::TERM.trap do
+        Log.info { "Received SIGTERM" }
+        @shutdown_channel.send(nil) rescue nil
+        graceful_shutdown
+        ::exit(0)
+      end
+      Signal::INT.trap do
+        Log.info { "Received SIGINT" }
+        @shutdown_channel.send(nil) rescue nil
+        graceful_shutdown
+        ::exit(0)
+      end
     end
 
     private def spawn_diagnostics_worker

@@ -3,7 +3,7 @@
 ## Current State
 
 - **8,686 LOC** source across 80 files, **5,623 LOC** specs, **389 passing tests**
-- 23 providers, 28 handlers, 5 AST visitors, 0 external dependencies
+- 23 providers, 28 handlers, 5 AST visitors, 12 infrastructure modules
 - Crystal >= 1.19.1, stdlib only (includes `compiler/crystal/syntax`)
 - MIT licensed, CI on Crystal latest + nightly
 
@@ -18,9 +18,9 @@ Server (main loop, project root detection, diagnostics worker)
     │
 Dispatcher (lazy-init, routes methods → handlers)
     │
-Handlers (26 files — extract params, call provider, format response)
+Handlers (28 files — extract params, call provider, format response)
     │
-Providers (22 files — business logic)
+Providers (23 files — business logic)
     ├─ CrystalTool (compiler invocations, 30s timeout, cancellation, request coalescing)
     ├─ ToolResultCache (LRU cache for tool results, 500 entries, 60s TTL)
     ├─ DocumentStore (in-memory incremental editing)
@@ -38,19 +38,20 @@ Providers (22 files — business logic)
 
 ## Feature Inventory
 
-### LSP Methods (40+)
+### LSP Methods (39 registered)
 
 | Category | Methods |
 |----------|---------|
 | Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` |
 | Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) |
 | Navigation | `definition`, `typeDefinition`, `implementation`, `references` |
-| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `rangeFormatting`, `onTypeFormatting`, `codeAction`, `linkedEditingRange` |
+| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` |
 | Symbols | `documentSymbol`, `workspace/symbol` |
 | Intelligence | `semanticTokens/full`, `semanticTokens/full/delta`, `documentHighlight`, `foldingRange`, `selectionRange` |
-| Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` |
-| Extras | `inlayHint`, `codeLens`, `codeLens/resolve`, `documentLink`, `documentColor`, `colorPresentation`, `workspace/executeCommand` |
-| Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles`, `window/workDoneProgress` |
+| Call Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls` |
+| Type Hierarchy | `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` |
+| Extras | `inlayHint`, `codeLens`, `workspace/executeCommand` |
+| Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles` |
 | Concurrency | `$/cancelRequest`, async dispatch for slow methods |
 
 ### Providers by Size
@@ -58,9 +59,9 @@ Providers (22 files — business logic)
 | Provider | LOC | Capabilities |
 |----------|-----|-------------|
 | code_action | 529 | Unused var fix, method stub, add require, organize requires, extract variable/method, convert block, expand macro |
-| completion | 360 | Keywords, snippets, context-aware dot-completion (`.`, `:`, `@` triggers) |
+| semantic_tokens | 383 | Lexer-based tokenization, 10+ token types, delta encoding with per-document token cache |
+| completion | 381 | Keywords, snippets, context-aware dot-completion (`.`, `:`, `@` triggers) |
 | call_hierarchy | 354 | Incoming/outgoing calls, AST-based with regex fallback |
-| semantic_tokens | 370 | Lexer-based tokenization, 10+ token types, delta encoding with token cache |
 | document_symbol | 228 | Hierarchical outline (classes, methods, macros, constants, properties) |
 | inlay_hints | 221 | Variable/parameter type annotations |
 | type_hierarchy | 211 | Supertypes/subtypes for classes, structs, modules |
@@ -70,16 +71,16 @@ Providers (22 files — business logic)
 | rename | 125 | Type-aware, AST-based with prepare support |
 | document_highlight | 123 | Read/write occurrence classification |
 | folding_range | 119 | Blocks, requires, comment sections |
-| references | 125 | AST in-document, AST index cross-file with regex fallback |
-| hover | 316 | Type info + doc comments, Tier 1 pattern macro expansion, Tier 2 crystal tool expand (cached, non-blocking), parallel tool dispatch, AST index doc lookup |
+| references | 124 | AST in-document, AST index cross-file, regex fallback |
+| hover | 316 | Type info + doc comments, Tier 1 pattern macro expansion, Tier 2 `crystal tool expand` (cached, non-blocking), parallel tool dispatch, AST index doc lookup |
 | type_definition | 102 | Navigate to variable/expression type |
 | linked_editing_range | 99 | Block keyword ↔ `end` simultaneous editing |
 | code_lens | 94 | Reference counts above methods/classes |
-| macro_expander | 120 | Pattern-based expansion for property, getter, setter, record macros |
+| macro_expander | 147 | Pattern-based expansion for `property`, `getter`, `setter`, `record` macros |
 | workspace_symbol | 73 | Cross-file symbol search via AST index with regex fallback |
 | implementation | 34 | Abstract type implementations |
-| definition | 60 | AST index lookup with crystal tool fallback |
-| formatting | 20 | crystal tool format (full + range + on-type) |
+| definition | 65 | AST index lookup with `crystal tool` fallback |
+| formatting | 20 | `crystal tool format` (full document) |
 
 ### Infrastructure
 
@@ -108,9 +109,8 @@ Providers (22 files — business logic)
 | 7 | AST Integration | Parser/lexer/visitors, two-tier diagnostics, AST-aware providers with regex fallback |
 | 8 | Incremental Diagnostics | Diagnostic diffing, multi-file routing, require graph, idle pre-compilation |
 | 9 | Medium Features | Severity config, linked editing, type hierarchy, enhanced code actions |
-| 10 | Low Features | Range formatting, on-type formatting, document links, color provider |
-| 11 | Advanced Intelligence | Semantic tokens delta, macro-aware intelligence, persistent cross-file AST index |
-| 12 | Compiler Acceleration | Tool result cache, request coalescing, parallel hover dispatch, Tier 2 macro expand via `crystal tool expand`, expand command, auto-disable on failure |
+| 10 | Advanced Intelligence | Semantic tokens delta, macro-aware intelligence, persistent cross-file AST index |
+| 11 | Compiler Acceleration | Tool result cache, request coalescing, parallel hover dispatch, `crystal tool expand`, expand command |
 
 ---
 

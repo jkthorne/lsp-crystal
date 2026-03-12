@@ -12,6 +12,7 @@ module Lsp::Crystal
     getter configuration : Configuration
     getter workspace_folders : Array(String)
     getter request_tracker : RequestTracker
+    getter ast_cache : AST::Cache
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
@@ -27,6 +28,7 @@ module Lsp::Crystal
       @configuration = Configuration.new
       @workspace_folders = [] of String
       @request_tracker = RequestTracker.new
+      @ast_cache = AST::Cache.new
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new

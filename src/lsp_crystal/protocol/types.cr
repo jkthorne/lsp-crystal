@@ -85,14 +85,26 @@ module Lsp::Crystal
     end
   end
 
+  struct Command
+    include JSON::Serializable
+
+    property title : String
+    property command : String
+    property arguments : Array(JSON::Any)?
+
+    def initialize(@title, @command, @arguments = nil)
+    end
+  end
+
   struct CodeAction
     include JSON::Serializable
 
     property title : String
     property kind : String?
     property edit : WorkspaceEdit?
+    property command : Command?
 
-    def initialize(@title, @kind = nil, @edit = nil)
+    def initialize(@title, @kind = nil, @edit = nil, @command = nil)
     end
   end
 end

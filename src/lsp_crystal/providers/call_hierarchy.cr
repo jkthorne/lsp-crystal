@@ -40,7 +40,7 @@ module Lsp::Crystal::Providers
     end
 
     # Prepare: find the method/class at cursor
-    def self.prepare(document : Document, line : Int32, character : Int32) : Array(CallHierarchyItem)
+    def self.prepare(document : Document, line : Int32, character : Int32, ast_cache : AST::Cache? = nil) : Array(CallHierarchyItem)
       text = document.line_at(line)
       return [] of CallHierarchyItem unless text
 
@@ -136,14 +136,83 @@ module Lsp::Crystal::Providers
     end
 
     # Find methods called by the given method
-    def self.outgoing_calls(item : CallHierarchyItem, document : Document?, workspace_index : WorkspaceIndex?) : Array(OutgoingCall)
+    def self.outgoing_calls(item : CallHierarchyItem, document : Document?, workspace_index : WorkspaceIndex?, ast_cache : AST::Cache? = nil) : Array(OutgoingCall)
       return [] of OutgoingCall unless document
 
+      # Try AST-based call extraction first
+      if cache = ast_cache
+        result = cache.get(document)
+        if result && result.success? && (node = result.node)
+          ast_calls = outgoing_calls_ast(item, node, document, workspace_index)
+          return ast_calls unless ast_calls.empty?
+        end
+      end
+
+      outgoing_calls_regex(item, document, workspace_index)
+    end
+
+    # AST-based outgoing call detection
+    private def self.outgoing_calls_ast(item : CallHierarchyItem, ast_node : ::Crystal::ASTNode, document : Document, workspace_index : WorkspaceIndex?) : Array(OutgoingCall)
+      calls = [] of OutgoingCall
+      method_name = item.name
+      target_line = item.range.start.line
+
+      # Find the Def node at the target line
+      def_node = find_def_node(ast_node, target_line)
+      return calls unless def_node
+
+      # Visit call nodes inside the def
+      visitor = AST::CallVisitor.new(skip_name: method_name)
+      def_node.body.accept(visitor)
+
+      visitor.calls.each do |call_info|
+        next if SemanticTokens::KEYWORDS.includes?(call_info.name)
+
+        target = find_definition(call_info.name, document, workspace_index)
+        next unless target
+
+        existing = calls.find { |c| c.to_item.name == call_info.name }
+        if existing
+          existing.to_ranges << call_info.range
+        else
+          calls << OutgoingCall.new(
+            to_item: target,
+            to_ranges: [call_info.range]
+          )
+        end
+      end
+
+      calls
+    rescue
+      [] of OutgoingCall
+    end
+
+    private def self.find_def_node(node : ::Crystal::ASTNode, target_line : Int32) : ::Crystal::Def?
+      case node
+      when ::Crystal::Def
+        loc = node.location
+        return node if loc && loc.line_number - 1 == target_line
+      when ::Crystal::Expressions
+        node.expressions.each do |expr|
+          result = find_def_node(expr, target_line)
+          return result if result
+        end
+      when ::Crystal::ClassDef
+        result = find_def_node(node.body, target_line)
+        return result if result
+      when ::Crystal::ModuleDef
+        result = find_def_node(node.body, target_line)
+        return result if result
+      end
+      nil
+    end
+
+    # Regex-based outgoing call detection (fallback)
+    private def self.outgoing_calls_regex(item : CallHierarchyItem, document : Document, workspace_index : WorkspaceIndex?) : Array(OutgoingCall)
       calls = [] of OutgoingCall
       method_name = item.name
       start_line = item.range.start.line
 
-      # Find the method body: from def line to its end
       in_method = false
       depth = 0
       call_pattern = /\b(\w+[?!]?)\s*[\(\.]/
@@ -166,10 +235,9 @@ module Lsp::Crystal::Providers
           break if depth <= 0
         end
 
-        # Find method calls in this line
         line.scan(call_pattern) do |match|
           call_name = match[1]
-          next if call_name == method_name # skip recursion
+          next if call_name == method_name
           next if SemanticTokens::KEYWORDS.includes?(call_name)
 
           col = line.index(call_name) || 0
@@ -178,7 +246,6 @@ module Lsp::Crystal::Providers
             end_pos: Position.new(line: line_num, character: col + call_name.size)
           )
 
-          # Find the target definition
           target = find_definition(call_name, document, workspace_index)
           next unless target
 

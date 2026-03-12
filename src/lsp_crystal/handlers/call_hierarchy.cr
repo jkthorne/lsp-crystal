@@ -12,7 +12,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, [] of Providers::CallHierarchy::CallHierarchyItem)
       end
 
-      items = Providers::CallHierarchy.prepare(doc, line, character)
+      items = Providers::CallHierarchy.prepare(doc, line, character, server.ast_cache)
       JSONRPC::Response.success(id, items)
     end
 
@@ -33,7 +33,7 @@ module Lsp::Crystal::Handlers
       item = Providers::CallHierarchy::CallHierarchyItem.from_json(item_json.to_json)
 
       doc = server.document_store.get(item.uri)
-      calls = Providers::CallHierarchy.outgoing_calls(item, doc, server.workspace_index)
+      calls = Providers::CallHierarchy.outgoing_calls(item, doc, server.workspace_index, server.ast_cache)
       JSONRPC::Response.success(id, calls)
     end
   end

@@ -91,7 +91,7 @@ module Lsp::Crystal::Providers
       end
     end
 
-    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String? = nil, workspace_index : WorkspaceIndex? = nil) : CompletionList
+    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String? = nil, workspace_index : WorkspaceIndex? = nil, ast_cache : AST::Cache? = nil) : CompletionList
       items = [] of CompletionItem
       current_line = document.line_at(line) || ""
       prefix = character <= current_line.size ? current_line[0...character] : current_line
@@ -104,6 +104,10 @@ module Lsp::Crystal::Providers
           items.concat(keyword_completions(word))
           items.concat(snippet_completions(word))
           items.concat(document_symbol_completions(document, word))
+          # AST-based local var/param completions
+          if cache = ast_cache
+            items.concat(ast_context_completions(document, line, character, word, cache))
+          end
         end
       end
 
@@ -225,6 +229,59 @@ module Lsp::Crystal::Providers
           end
         end
       end
+    end
+
+    # AST-based completions for local vars, params, and instance vars at cursor
+    private def self.ast_context_completions(document : Document, line : Int32, character : Int32, word : String, ast_cache : AST::Cache) : Array(CompletionItem)
+      items = [] of CompletionItem
+      result = ast_cache.get(document)
+      return items unless result && result.success? && (node = result.node)
+
+      visitor = AST::ContextVisitor.new(line, character)
+      node.accept(visitor)
+      ctx = visitor.context
+
+      seen = Set(String).new
+
+      ctx.method_params.each do |name|
+        next unless name.starts_with?(word) && name != word
+        next if seen.includes?(name)
+        seen.add(name)
+        items << CompletionItem.new(
+          label: name,
+          kind: CompletionItemKind::Variable.value,
+          detail: "parameter",
+          sort_text: "0_#{name}"
+        )
+      end
+
+      ctx.local_vars.each do |name|
+        next unless name.starts_with?(word) && name != word
+        next if seen.includes?(name)
+        seen.add(name)
+        items << CompletionItem.new(
+          label: name,
+          kind: CompletionItemKind::Variable.value,
+          detail: "local variable",
+          sort_text: "0_#{name}"
+        )
+      end
+
+      ctx.instance_vars.each do |name|
+        next unless name.starts_with?(word) && name != word
+        next if seen.includes?(name)
+        seen.add(name)
+        items << CompletionItem.new(
+          label: name,
+          kind: CompletionItemKind::Field.value,
+          detail: "instance variable",
+          sort_text: "0_#{name}"
+        )
+      end
+
+      items
+    rescue
+      [] of CompletionItem
     end
 
     private def self.extract_word(prefix : String) : String

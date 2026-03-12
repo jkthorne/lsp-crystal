@@ -6,21 +6,26 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 
 ### Navigation
 - **Go to Definition** — Jump to symbol definitions via `crystal tool implementations`
+- **Go to Type Definition** — Navigate to the type of a variable or expression
 - **Go to Implementation** — Find all implementations of abstract types
 - **Find References** — Search for symbol occurrences across the workspace
 - **Document Symbols** — Hierarchical outline of classes, methods, macros, properties, constants, and more
 - **Workspace Symbols** — Search symbols across all `.cr` files in the project
+- **Call Hierarchy** — Incoming and outgoing call navigation
 
 ### Editing
-- **Completion** — Keywords, snippets, and context-aware suggestions (trigger: `.`, `:`, `@`)
+- **Completion** — Keywords, snippets, and context-aware dot-completion (trigger: `.`, `:`, `@`)
 - **Signature Help** — Method signature display with active parameter tracking (trigger: `(`, `,`)
-- **Hover** — Type information via `crystal tool context`
-- **Rename** — Workspace-wide symbol renaming with prepare support
-- **Code Actions** — Quick fix for unused variables, organize/sort requires
+- **Hover** — Type information and documentation comments via `crystal tool context`
+- **Rename** — Type-aware workspace-wide symbol renaming with prepare support
+- **Code Actions** — Quick fix for unused variables, organize/sort requires, extract variable/method
 - **Formatting** — Code formatting via `crystal tool format`
+- **Inlay Hints** — Inline type annotations for variables and parameters
+- **Code Lens** — Reference counts above methods and classes
 
 ### Code Intelligence
 - **Diagnostics** — Real-time error and warning reporting via `crystal build --no-codegen` with 500ms debounce
+- **Semantic Tokens** — Token-level syntax highlighting for keywords, types, strings, comments, and variables
 - **Document Highlight** — Highlight all occurrences of a symbol with read/write classification
 - **Folding Ranges** — Fold blocks, consecutive requires, and comment sections
 - **Selection Range** — Smart expand/shrink selection from word to block to document
@@ -56,6 +61,10 @@ vim.lsp.start({
 ### VS Code
 
 Use a generic LSP client extension and configure it to run `bin/lsp-crystal` with stdio transport.
+
+### Other Editors
+
+See [docs/editors.md](docs/editors.md) for setup guides for Helix, Zed, Sublime Text, and Emacs.
 
 ## Development
 

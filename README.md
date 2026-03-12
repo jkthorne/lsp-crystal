@@ -13,6 +13,7 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 - **Workspace Symbols** — Search symbols across all `.cr` files in the project
 - **Call Hierarchy** — Incoming and outgoing call navigation
 - **Type Hierarchy** — Browse supertypes and subtypes for classes, structs, and modules
+- **Document Links** — Clickable `require` paths that navigate to the resolved file
 
 ### Editing
 - **Completion** — Keywords, snippets, and context-aware dot-completion (trigger: `.`, `:`, `@`)
@@ -21,7 +22,8 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 - **Rename** — Type-aware workspace-wide symbol renaming with prepare support
 - **Code Actions** — Quick fix for unused variables, generate method stubs, add missing requires, organize/sort requires, extract variable/method, convert to multi-line block
 - **Linked Editing** — Simultaneous editing of block keywords and their matching `end`
-- **Formatting** — Code formatting via `crystal tool format`
+- **Formatting** — Code formatting via `crystal tool format` (full document and range)
+- **On-Type Formatting** — Auto-insert `end` after block-opening keywords
 - **Inlay Hints** — Inline type annotations for variables and parameters
 - **Code Lens** — Reference counts above methods and classes
 
@@ -31,6 +33,7 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 - **Document Highlight** — Highlight all occurrences of a symbol with read/write classification
 - **Folding Ranges** — Fold blocks, consecutive requires, and comment sections
 - **Selection Range** — Smart expand/shrink selection from word to block to document
+- **Color Provider** — Preview hex color literals in the editor gutter
 
 ## Requirements
 

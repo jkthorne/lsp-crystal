@@ -91,14 +91,13 @@ module Lsp::Crystal::Providers
       end
     end
 
-    def self.run(document : Document, line : Int32, character : Int32) : CompletionList
+    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String? = nil, workspace_index : WorkspaceIndex? = nil) : CompletionList
       items = [] of CompletionItem
       current_line = document.line_at(line) || ""
       prefix = character <= current_line.size ? current_line[0...character] : current_line
 
       if prefix.rstrip.ends_with?(".")
-        # Dot completion — could use crystal tool context in the future
-        # For now return empty
+        items.concat(context_completions(document, line, character, workspace_root, workspace_index))
       else
         word = extract_word(prefix)
         unless word.empty?
@@ -109,6 +108,123 @@ module Lsp::Crystal::Providers
       end
 
       CompletionList.new(is_incomplete: false, items: items)
+    end
+
+    private def self.context_completions(document : Document, line : Int32, character : Int32, workspace_root : String?, workspace_index : WorkspaceIndex?) : Array(CompletionItem)
+      items = [] of CompletionItem
+
+      # Use crystal tool context to get the type of the expression before the dot
+      file_path = document.path
+      crystal_line = line + 1
+
+      # Find the dot position in the prefix
+      current_line = document.line_at(line) || ""
+      dot_col = character - 1
+      while dot_col >= 0 && current_line[dot_col]?.try(&.whitespace?)
+        dot_col -= 1
+      end
+      return items if dot_col < 0
+
+      # Write unsaved content to temp file for context lookup
+      result = if File.exists?(file_path) && File.read(file_path) == document.content
+                 CrystalTool.context(file_path, crystal_line, dot_col + 1)
+               else
+                 temp = File.tempname("crystal-lsp-completion", ".cr")
+                 begin
+                   File.write(temp, document.content)
+                   CrystalTool.context(temp, crystal_line, dot_col + 1)
+                 ensure
+                   File.delete(temp) rescue nil
+                 end
+               end
+
+      return items unless result.success
+
+      begin
+        json = JSON.parse(result.stdout)
+      rescue
+        return items
+      end
+
+      return items unless json["status"]?.try(&.as_s) == "ok"
+
+      contexts = json["contexts"]?.try(&.as_a) || return items
+      return items if contexts.empty?
+
+      # Extract type name from context (e.g., "String", "Array(Int32)")
+      type_name = contexts.first["context"]?.try(&.as_s) || return items
+      # Extract the base type name (strip generics, union types)
+      base_type = type_name.split("(").first.split("|").first.strip.split("::").last
+
+      # Search for methods defined on this type in workspace
+      seen = Set(String).new
+      search_type_methods(document, base_type, items, seen)
+
+      if idx = workspace_index
+        idx.search_type_methods(base_type) do |name, detail|
+          next if seen.includes?(name)
+          seen.add(name)
+          items << CompletionItem.new(
+            label: name,
+            kind: CompletionItemKind::Method.value,
+            detail: detail,
+            sort_text: "1_#{name}"
+          )
+        end
+      end
+
+      items
+    end
+
+    private def self.search_type_methods(document : Document, type_name : String, items : Array(CompletionItem), seen : Set(String))
+      in_type = false
+      depth = 0
+
+      document.content.each_line do |line|
+        stripped = line.strip
+        if stripped =~ /^\s*(?:class|struct|module)\s+#{Regex.escape(type_name)}\b/
+          in_type = true
+          depth = 1
+          next
+        end
+
+        if in_type
+          if stripped =~ /^\s*(?:class|struct|module|def|if|unless|case|begin|do|while|until|macro|enum|lib|fun|annotation)\b/
+            depth += 1
+          end
+          if stripped =~ /^\s*end\b/
+            depth -= 1
+            if depth <= 0
+              in_type = false
+              next
+            end
+          end
+
+          if depth == 2 && stripped =~ /^\s*def\s+(\w+[?!]?)/
+            name = $1
+            unless seen.includes?(name)
+              seen.add(name)
+              items << CompletionItem.new(
+                label: name,
+                kind: CompletionItemKind::Method.value,
+                detail: "#{type_name}##{name}",
+                sort_text: "1_#{name}"
+              )
+            end
+          elsif depth == 1 && stripped =~ /^\s*(?:property|getter)[?!]?\s+(\w+)/
+            name = $1
+            unless seen.includes?(name)
+              seen.add(name)
+              items << CompletionItem.new(
+                label: name,
+                kind: CompletionItemKind::Property.value,
+                detail: "#{type_name}##{name}",
+                sort_text: "1_#{name}"
+              )
+            end
+          end
+        end
+      end
     end
 
     private def self.extract_word(prefix : String) : String

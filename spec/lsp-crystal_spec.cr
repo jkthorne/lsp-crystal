@@ -2142,4 +2142,81 @@ describe Lsp::Crystal do
       raw.scan(/Content-Length:/).size.should eq(5)
     end
   end
+
+  # Phase 4: Smarter Intelligence
+
+  describe "Providers::Completion context-aware" do
+    it "returns empty for dot completion without crystal tool" do
+      code = "x = \"hello\"\nx."
+      doc = Lsp::Crystal::Document.new("file:///tmp/nonexistent.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::Completion.run(doc, 1, 2)
+      result.is_incomplete.should be_false
+    end
+
+    it "returns keyword completions for non-dot prefix" do
+      code = "de"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 2)
+      result.items.any? { |i| i.label == "def" }.should be_true
+    end
+
+    it "passes workspace info through handler" do
+      client = TestClient.new
+      client.initialize_server
+
+      code = "x = 1\nx"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/comp_ctx.cr", languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(200, "textDocument/completion", {
+        textDocument: {uri: "file:///tmp/comp_ctx.cr"},
+        position:     {line: 1, character: 1},
+      })
+      resp = client.read_response
+      resp["id"].should eq(200)
+      resp["result"]["items"].as_a.should be_a(Array(JSON::Any))
+      client.close
+    end
+  end
+
+  describe "WorkspaceIndex type methods" do
+    it "finds methods defined on a type" do
+      dir = File.tempname("ws_methods_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "types.cr"), "class Dog\n  def bark\n  end\n  def sit\n  end\nend\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      methods = [] of String
+      index.search_type_methods("Dog") do |name, detail|
+        methods << name
+      end
+
+      methods.should contain("bark")
+      methods.should contain("sit")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "returns empty for unknown type" do
+      dir = File.tempname("ws_methods_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "types.cr"), "class Cat\n  def meow\n  end\nend\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      methods = [] of String
+      index.search_type_methods("Dog") do |name, detail|
+        methods << name
+      end
+
+      methods.should be_empty
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
 end

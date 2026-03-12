@@ -139,6 +139,46 @@ module Lsp::Crystal
       results
     end
 
+    # Search for methods defined on a specific type
+    def search_type_methods(type_name : String, &block : String, String ->) : Nil
+      type_pattern = /^\s*(?:class|struct|module)\s+#{Regex.escape(type_name)}\b/
+
+      @mutex.synchronize do
+        @files.each_value do |entry|
+          in_type = false
+          depth = 0
+
+          entry.content.each_line do |line|
+            stripped = line.strip
+            if !in_type && stripped =~ type_pattern
+              in_type = true
+              depth = 1
+              next
+            end
+
+            next unless in_type
+
+            if stripped =~ /^\s*(?:class|struct|module|def|if|unless|case|begin|do|while|until|macro|enum|lib|fun|annotation)\b/
+              depth += 1
+            end
+            if stripped =~ /^\s*end\b/
+              depth -= 1
+              if depth <= 0
+                in_type = false
+                next
+              end
+            end
+
+            if depth == 2 && stripped =~ /^\s*def\s+(\w+[?!]?)/
+              yield $1, "#{type_name}##{$1}"
+            elsif depth == 1 && stripped =~ /^\s*(?:property|getter)[?!]?\s+(\w+)/
+              yield $1, "#{type_name}##{$1}"
+            end
+          end
+        end
+      end
+    end
+
     def file_count : Int32
       @mutex.synchronize { @files.size }
     end

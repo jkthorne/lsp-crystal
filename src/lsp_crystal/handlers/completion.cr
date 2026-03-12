@@ -14,7 +14,7 @@ module Lsp::Crystal::Handlers
         ))
       end
 
-      result = Providers::Completion.run(doc, line, character)
+      result = Providers::Completion.run(doc, line, character, server.workspace_root, server.workspace_index)
       JSONRPC::Response.success(id, result)
     end
   end

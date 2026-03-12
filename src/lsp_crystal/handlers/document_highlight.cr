@@ -12,7 +12,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, [] of Providers::DocumentHighlight::HighlightInfo)
       end
 
-      highlights = Providers::DocumentHighlight.run(doc, line, character)
+      highlights = Providers::DocumentHighlight.run(doc, line, character, server.ast_cache)
       JSONRPC::Response.success(id, highlights)
     end
   end

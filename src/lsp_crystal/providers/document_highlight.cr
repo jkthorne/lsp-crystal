@@ -16,12 +16,43 @@ module Lsp::Crystal::Providers
     end
 
     # Find all occurrences of the word at the given position
-    def self.run(document : Document, line : Int32, character : Int32) : Array(HighlightInfo)
+    # Uses AST for accurate READ/WRITE classification when available
+    def self.run(document : Document, line : Int32, character : Int32, ast_cache : AST::Cache? = nil) : Array(HighlightInfo)
       word = extract_word(document, line, character)
       return [] of HighlightInfo if word.empty?
 
+      # Try AST path first
+      if cache = ast_cache
+        parse_result = cache.get(document)
+        if parse_result && parse_result.success? && (node = parse_result.node)
+          results = run_ast(node, word)
+          return results unless results.empty?
+        end
+      end
+
+      run_regex(document, word)
+    end
+
+    # AST-based highlight with accurate read/write classification
+    private def self.run_ast(node : ::Crystal::ASTNode, word : String) : Array(HighlightInfo)
+      visitor = AST::ReferenceVisitor.new(target_name: word)
+      node.accept(visitor)
+
+      visitor.references.map do |ref|
+        kind = case ref.kind
+               when .definition? then WRITE
+               when .write?      then WRITE
+               else                   READ
+               end
+        HighlightInfo.new(range: ref.range, kind: kind)
+      end
+    rescue
+      [] of HighlightInfo
+    end
+
+    # Regex-based highlight (fallback)
+    private def self.run_regex(document : Document, word : String) : Array(HighlightInfo)
       results = [] of HighlightInfo
-      # Build a regex that matches the word with word boundaries
       pattern = /\b#{Regex.escape(word)}\b/
 
       document.content.each_line.with_index do |text, line_num|

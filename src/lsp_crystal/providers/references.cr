@@ -3,15 +3,22 @@ module Lsp::Crystal::Providers
     MAX_RESULTS = 500
 
     # Find all references to the word at the given position across the workspace
-    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String?, include_declaration : Bool = true, workspace_index : WorkspaceIndex? = nil) : Array(Location)
+    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String?, include_declaration : Bool = true, workspace_index : WorkspaceIndex? = nil, ast_cache : AST::Cache? = nil) : Array(Location)
       word = extract_word(document, line, character)
       return [] of Location if word.empty?
 
       results = [] of Location
       pattern = /\b#{Regex.escape(word)}\b/
 
-      # Search current document first
-      find_in_content(document.content, document.uri, pattern, results)
+      # Search current document: AST-aware for accuracy, regex fallback
+      ast_found = false
+      if cache = ast_cache
+        parse_result = cache.get(document)
+        if parse_result && parse_result.success? && (node = parse_result.node)
+          ast_found = find_in_ast(node, word, document.uri, results)
+        end
+      end
+      find_in_content(document.content, document.uri, pattern, results) unless ast_found
 
       # Use index if available, otherwise fall back to file scanning
       if workspace_index && workspace_index.indexed?
@@ -38,6 +45,20 @@ module Lsp::Crystal::Providers
       end
 
       results
+    end
+
+    # AST-based in-document reference search — ignores strings and comments
+    private def self.find_in_ast(node : ::Crystal::ASTNode, word : String, uri : String, results : Array(Location)) : Bool
+      visitor = AST::ReferenceVisitor.new(target_name: word)
+      node.accept(visitor)
+      refs = visitor.references
+      return false if refs.empty?
+      refs.each do |ref|
+        results << Location.new(uri: uri, range: ref.range)
+      end
+      true
+    rescue
+      false
     end
 
     private def self.find_in_content(content : String, uri : String, pattern : Regex, results : Array(Location)) : Nil

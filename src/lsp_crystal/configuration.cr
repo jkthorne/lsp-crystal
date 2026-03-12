@@ -7,6 +7,8 @@ module Lsp::Crystal
     property code_lens_enabled : Bool = true
     property semantic_tokens_enabled : Bool = true
     property precompile_on_idle : Bool = true
+    property diagnostics_min_severity : Int32 = 4
+    property diagnostics_suppressed_patterns : Array(String) = [] of String
 
     def initialize
     end
@@ -34,6 +36,12 @@ module Lsp::Crystal
         if crystal_lsp["precompileOnIdle"]?
           poi = crystal_lsp["precompileOnIdle"].as_bool?
           @precompile_on_idle = poi unless poi.nil?
+        end
+        if sev = crystal_lsp["diagnosticsMinSeverity"]?.try(&.as_i?)
+          @diagnostics_min_severity = sev.clamp(1, 4)
+        end
+        if patterns = crystal_lsp["diagnosticsSuppressedPatterns"]?.try(&.as_a?)
+          @diagnostics_suppressed_patterns = patterns.compact_map(&.as_s?)
         end
       end
     end

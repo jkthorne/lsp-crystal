@@ -124,8 +124,18 @@ module Lsp::Crystal
       end
     end
 
+    private def filter_diagnostics(diagnostics : Array(Providers::Diagnostics::Diagnostic)) : Array(Providers::Diagnostics::Diagnostic)
+      min_sev = @configuration.diagnostics_min_severity
+      patterns = @configuration.diagnostics_suppressed_patterns
+      return diagnostics if min_sev >= 4 && patterns.empty?
+      diagnostics.reject do |d|
+        d.severity > min_sev || patterns.any? { |p| d.message.includes?(p) }
+      end
+    end
+
     # Publish diagnostics only if they differ from last published set
     def publish_diagnostics_if_changed(uri : String, diagnostics : Array(Providers::Diagnostics::Diagnostic)) : Nil
+      diagnostics = filter_diagnostics(diagnostics)
       @published_diagnostics_mutex.synchronize do
         cached = @published_diagnostics[uri]?
         if cached && diagnostics_equal?(cached, diagnostics)

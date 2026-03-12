@@ -4088,4 +4088,47 @@ describe Lsp::Crystal do
       # Should not raise, just a no-op if no timer set
     end
   end
+
+  # Phase 9: Medium-Impact Future Work
+
+  describe "Configuration - diagnostic severity" do
+    it "defaults to show all severities" do
+      config = Lsp::Crystal::Configuration.new
+      config.diagnostics_min_severity.should eq(4)
+      config.diagnostics_suppressed_patterns.should be_empty
+    end
+
+    it "parses diagnosticsMinSeverity from JSON" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%{{"crystalLsp": {"diagnosticsMinSeverity": 2}}})
+      config.update(settings)
+      config.diagnostics_min_severity.should eq(2)
+    end
+
+    it "clamps severity to valid range" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%{{"crystalLsp": {"diagnosticsMinSeverity": 10}}})
+      config.update(settings)
+      config.diagnostics_min_severity.should eq(4)
+
+      settings = JSON.parse(%{{"crystalLsp": {"diagnosticsMinSeverity": 0}}})
+      config.update(settings)
+      config.diagnostics_min_severity.should eq(1)
+    end
+
+    it "parses diagnosticsSuppressedPatterns from JSON" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%{{"crystalLsp": {"diagnosticsSuppressedPatterns": ["unused", "deprecated"]}}})
+      config.update(settings)
+      config.diagnostics_suppressed_patterns.should eq(["unused", "deprecated"])
+    end
+
+    it "handles missing severity settings gracefully" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%{{"crystalLsp": {"crystalPath": "/usr/bin/crystal"}}})
+      config.update(settings)
+      config.diagnostics_min_severity.should eq(4)
+      config.diagnostics_suppressed_patterns.should be_empty
+    end
+  end
 end

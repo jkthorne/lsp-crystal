@@ -1,126 +1,83 @@
-# Crystal LSP — Production Readiness Plan
+# Crystal LSP — Status & Future Plan
 
-## Current State
+## Current State (v0.1.0)
 
-- ~3,800 LOC, 89 specs, 14 providers, 0 external dependencies
+- **4,668 LOC** source, **3,074 LOC** specs, **200 passing tests**
+- 20 providers, 23 handlers, 0 external dependencies (Crystal stdlib only)
 - Clean layered architecture: Transport → Dispatcher → Handlers → Providers → CrystalTool
-- Covers most-used LSP features (hover, completion, definition, references, rename, etc.)
-- Suitable for small projects; not yet production-hardened for large codebases
+- Structured JSON logging with request tracing, graceful signal handling
+- GitHub Actions CI against Crystal latest + nightly
+- Editor docs for VS Code, Neovim, Helix, Zed, Sublime Text, Emacs
 
 ---
 
-## Critical Gaps
+## Implemented Features
 
-| Gap | Impact | Why It Matters |
-|-----|--------|----------------|
-| No crystal tool timeout | LSP hangs indefinitely | Compiler stuck on large/broken code = frozen editor |
-| No workspace caching | O(n*m) per references/symbol query | Every request re-reads every `.cr` file |
-| Race condition on `@pending_diagnostics` | Missed/duplicate diagnostics | Main fiber + worker fiber both access without sync |
-| No Content-Length limit | OOM crash | Malformed header allocates unbounded memory |
-| Text-based references/rename | False positives | Renames `name` inside `filename` — not type-aware |
+### LSP Methods Supported
 
-## Missing LSP Features (by impact)
+| Category | Methods |
+|----------|---------|
+| Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` |
+| Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) |
+| Navigation | `definition`, `typeDefinition`, `implementation`, `references` |
+| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction` |
+| Symbols | `documentSymbol`, `workspace/symbol` |
+| Intelligence | `semanticTokens/full`, `documentHighlight`, `foldingRange`, `selectionRange` |
+| Advanced | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `inlayHint`, `codeLens` |
+| Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `window/workDoneProgress` |
 
-| Feature | Editor Impact | Difficulty |
-|---------|--------------|------------|
-| Semantic tokens | Syntax highlighting quality | Hard (needs AST) |
-| Call hierarchy | "Who calls this?" navigation | Medium |
-| Inlay hints | Inline type annotations | Medium |
-| Code lens | Run/debug annotations | Easy-Medium |
-| Type hierarchy | Inheritance browsing | Medium |
-| Progress reporting | UX during slow ops | Easy |
-| Configuration | User customization | Easy |
-| Workspace folders | Multi-root projects | Medium |
-| File watching | External change detection | Medium |
+### Infrastructure
 
-## Architectural Weaknesses
-
-1. **All providers are regex-based** — no AST, no semantic understanding. This caps the quality ceiling for completion, references, rename, and symbols.
-2. **No result caching** — workspace symbol and references re-glob and re-read all files per request.
-3. **Single-threaded request handling** — crystal tool calls block the main loop.
-4. **No incremental compilation** — every diagnostic runs `crystal build --no-codegen` from scratch.
+- 30s configurable timeout on all `crystal tool` invocations
+- Mutex-protected diagnostics with channel-based debouncing (500ms default)
+- Content-Length validation (10MB max)
+- Background workspace indexing with incremental updates
+- In-memory symbol cache per document
+- SIGTERM/SIGINT graceful shutdown
+- JSON structured logging with request ID and duration tracing
 
 ---
 
-## Phase 1: Reliability & Safety
+## Completed Phases
 
-**Goal: Won't crash or hang in real use.**
+All five original plan phases are complete:
 
-- [x] Add timeout to `CrystalTool.run()` — 30s default, configurable
-- [x] Fix `@pending_diagnostics` race — replace with channel-based queuing or mutex
-- [x] Add Content-Length validation — reject messages > 10MB
-- [x] Add `ensure` blocks for temp file cleanup in `check_content`
-- [x] Validate document URI paths — reject paths outside workspace root
-- [x] Handle symlinks in `Dir.glob` — skip symlink cycles
-
-## Phase 2: Performance
-
-**Goal: Usable on projects with 1,000+ files.**
-
-- [x] File index cache — maintain in-memory list of `.cr` files, invalidate on `didChangeWatchedFiles`
-- [x] Symbol cache per document — cache `DocumentSymbol` results, invalidate on `didChange`
-- [x] Workspace symbol index — background-index all files on init, update incrementally
-- [x] References search optimization — search index instead of re-reading all files
-- [x] Add `window/workDoneProgress` — report progress on slow operations (diagnostics, workspace search)
-
-## Phase 3: Missing Core Features
-
-**Goal: Feature parity with basic language servers.**
-
-- [x] Semantic tokens — use Crystal's parser/lexer for token classification (keywords, types, strings, comments, variables)
-- [x] Call hierarchy — `crystal tool implementations` can provide incoming/outgoing calls
-- [x] Inlay hints — show inferred types using `crystal tool context`
-- [x] Code lens — "N references" count above methods/classes
-- [x] Configuration support — handle `workspace/didChangeConfiguration`, support settings like crystal path, format on save, diagnostic delay
-- [x] Multiple workspace folders — handle `workspace/didChangeWorkspaceFolders`
-
-## Phase 4: Smarter Intelligence
-
-**Goal: Completion and navigation that actually understands Crystal.**
-
-- [x] Context-aware completion — use `crystal tool context` for dot-completion (method/property suggestions on typed objects)
-- [x] Improved hover — include documentation from comments above definitions
-- [x] Type-aware rename — use `crystal tool implementations` to find true references, not text matches
-- [x] Extract method/variable refactoring — code actions for common refactors
-- [x] Go-to-type-definition — separate from go-to-definition
-
-## Phase 5: Polish & Hardening
-
-**Goal: 1.0 release quality.**
-
-- [x] Structured logging — JSON log format with request IDs for tracing
-- [x] Integration test suite — tests against real Crystal project files
-- [x] Concurrency stress tests — rapid open/edit/close cycles
-- [x] Large file tests — documents with 10K+ lines
-- [x] Graceful shutdown — handle SIGTERM, drain pending work
-- [x] CI/CD pipeline — automated build + test on Crystal nightly
-- [x] Editor-specific documentation — VS Code, Neovim, Helix, Zed setup guides
+- **Phase 1 — Reliability & Safety:** Timeouts, race fix, Content-Length limit, temp file cleanup, URI validation, symlink handling
+- **Phase 2 — Performance:** File index cache, symbol cache, workspace index, references optimization, progress reporting
+- **Phase 3 — Core Features:** Semantic tokens, call hierarchy, inlay hints, code lens, configuration, workspace folders
+- **Phase 4 — Smarter Intelligence:** Context-aware completion, doc comments in hover, type-aware rename, extract refactoring, type definition
+- **Phase 5 — Polish & Hardening:** Structured logging, integration/stress/large-file tests, graceful shutdown, CI/CD, editor docs
 
 ---
 
-## Priority Matrix
+## Remaining Limitations
 
-```
-         HIGH IMPACT
-              |
-  Semantic    |   Timeouts
-  Tokens      |   Caching
-  Completion  |   Race Fix
-              |   Progress
-              |
-LOW ----------+---------- HIGH EFFORT
-EFFORT        |
-  Config      |   Multi-workspace
-  Code Lens   |   Call Hierarchy
-  Inlay Hints |   Type-aware Rename
-              |
-         LOW IMPACT
-```
+These are known architectural constraints that limit quality but are not blockers for typical use:
 
-Start top-right (high impact, necessary), then top-left (high impact, quick wins), then bottom as time allows.
+1. **Regex-based providers** — Document symbols, references, highlights, and rename are pattern-matching based, not AST-aware. This causes occasional false positives (e.g. matching a word inside a string or comment).
+2. **No incremental compilation** — Every diagnostic runs a full `crystal build --no-codegen`. Slow on large projects.
+3. **Single-fiber request handling** — Crystal tool calls block the main loop. Long-running operations (diagnostics, context) can delay responses to fast operations (symbols, highlights).
+4. **No file watcher** — External file changes (git checkout, external editor saves) are only detected on next workspace indexing. The server relies on `didOpen`/`didChange` for open files.
+5. **Semantic tokens are regex-based** — Not using Crystal's actual lexer/parser, so edge cases in string interpolation, heredocs, and macros may be misclassified.
 
-## Estimated Effort
+## Future Work
 
-- **Minimum viable production (Phases 1-2):** ~2 weeks — safe, performant, current features
-- **Competitive LSP (Phases 1-4):** ~6 weeks — smart completion, semantic understanding
-- **Polished 1.0 (all phases):** ~7 weeks — full test suite, CI, docs
+Potential improvements if the project continues beyond 1.0:
+
+### High Impact
+- **Crystal AST integration** — Use Crystal's compiler API for true semantic analysis instead of regex. Would dramatically improve accuracy of symbols, references, rename, and completion.
+- **Incremental diagnostics** — Cache compilation state between runs or use `crystal tool` for faster feedback.
+- **Concurrent request handling** — Process crystal tool calls in spawned fibers so fast requests aren't blocked by slow ones.
+- **File watching** — Implement `workspace/didChangeWatchedFiles` to detect external changes.
+
+### Medium Impact
+- **Type hierarchy** — `typeHierarchy/supertypes` and `typeHierarchy/subtypes` for inheritance browsing.
+- **Linked editing ranges** — Simultaneous editing of matching pairs (e.g. block/end).
+- **Workspace edits** — Multi-file refactoring support beyond rename.
+- **Diagnostic severity configuration** — Let users suppress specific warning categories.
+
+### Low Impact
+- **Range formatting** — Format selected regions instead of whole file.
+- **On-type formatting** — Auto-format as the user types.
+- **Document links** — Make `require` paths clickable.
+- **Color provider** — Preview color literals in the gutter.

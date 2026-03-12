@@ -85,7 +85,7 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 |----------|-----|-------------|
 | code_action | 529 | 7 actions: unused var fix, method stub, add require, organize requires, extract variable, extract method, convert block syntax, expand macro |
 | semantic_tokens | 383 | Lexer-based tokenization, 10+ token types, delta encoding with per-document token cache |
-| completion | 381 | Keywords, snippets, context-aware dot-completion (`.`, `:`, `@` triggers) |
+| completion | 415 | Keywords, 21 snippets, context-aware dot-completion (`.`, `:`, `@` triggers), lazy doc resolution |
 | call_hierarchy | 354 | Incoming/outgoing calls, AST-based with regex fallback |
 | hover | 316 | Type info + doc comments, Tier 1 pattern macro expansion, Tier 2 `crystal tool expand` (cached, non-blocking), parallel tool dispatch, AST index doc lookup |
 | document_symbol | 228 | Hierarchical outline — classes, methods, macros, constants, properties |

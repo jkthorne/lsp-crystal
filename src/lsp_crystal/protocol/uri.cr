@@ -11,5 +11,12 @@ module Lsp::Crystal
         uri
       end
     end
+
+    # Check that a resolved path is within the workspace root
+    def self.path_within_workspace?(path : String, workspace_root : String) : Bool
+      resolved = File.realpath(path) rescue path
+      root = File.realpath(workspace_root) rescue workspace_root
+      resolved.starts_with?(root)
+    end
   end
 end

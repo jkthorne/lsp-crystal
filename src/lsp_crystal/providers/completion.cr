@@ -20,6 +20,18 @@ module Lsp::Crystal::Providers
       "case"   => {label: "case", insert: "case ${1:value}\nwhen ${2:pattern}\n  $0\nend", detail: "Case expression"},
       "begin"  => {label: "begin", insert: "begin\n  $0\nrescue ex\n  raise ex\nend", detail: "Begin/rescue block"},
       "do"     => {label: "do", insert: "do |${1:var}|\n  $0\nend", detail: "Block with do/end"},
+      "describe" => {label: "describe", insert: "describe \"${1:subject}\" do\n  $0\nend", detail: "Spec describe block"},
+      "it"       => {label: "it", insert: "it \"${1:does something}\" do\n  $0\nend", detail: "Spec it block"},
+      "property" => {label: "property", insert: "property ${1:name} : ${2:Type}", detail: "Property with type"},
+      "getter"   => {label: "getter", insert: "getter ${1:name} : ${2:Type}", detail: "Getter with type"},
+      "setter"   => {label: "setter", insert: "setter ${1:name} : ${2:Type}", detail: "Setter with type"},
+      "enum"     => {label: "enum", insert: "enum ${1:Name}\n  ${2:Value}\n  $0\nend", detail: "Define enum"},
+      "abstract" => {label: "abstract", insert: "abstract class ${1:Name}\n  abstract def ${2:method}\n  $0\nend", detail: "Abstract class"},
+      "macro"    => {label: "macro", insert: "macro ${1:name}\n  $0\nend", detail: "Define macro"},
+      "spawn"    => {label: "spawn", insert: "spawn do\n  $0\nend", detail: "Spawn fiber"},
+      "record"   => {label: "record", insert: "record ${1:Name}, ${2:field} : ${3:Type}", detail: "Record macro"},
+      "rescue"   => {label: "rescue", insert: "begin\n  ${1:code}\nrescue ${2:ex} : ${3:Exception}\n  $0\nensure\nend", detail: "Begin/rescue/ensure"},
+      "json_serializable" => {label: "json_serializable", insert: "include JSON::Serializable\n\n@[JSON::Field(key: \"${1:jsonKey}\")]\nproperty ${2:name} : ${3:Type}", detail: "JSON::Serializable boilerplate"},
     }
 
     enum CompletionItemKind

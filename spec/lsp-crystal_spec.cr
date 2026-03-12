@@ -2320,4 +2320,70 @@ describe Lsp::Crystal do
       actions.any? { |a| a.title == "Extract method" }.should be_false
     end
   end
+
+  describe "Providers::TypeDefinition" do
+    it "finds type definition in current document" do
+      code = "class MyType\n  def hello\n    42\n  end\nend\n\nx : MyType = MyType.new\n"
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, code)
+      locations = Lsp::Crystal::Providers::TypeDefinition.run(doc, 6, 4)
+      locations.should be_a(Array(Lsp::Crystal::Location))
+    end
+
+    it "finds type definition in workspace files" do
+      dir = File.tempname("typedef_test")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "types.cr"), "class Foo\n  def bar\n  end\nend\n")
+      File.write(File.join(dir, "main.cr"), "x = Foo.new\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      doc = Lsp::Crystal::Document.new(
+        Lsp::Crystal::URI.path_to_uri(File.join(dir, "main.cr")),
+        "crystal", 1, File.read(File.join(dir, "main.cr"))
+      )
+
+      found = false
+      index.search_type_definition("Foo") do |uri, line_num, col|
+        found = true
+        line_num.should eq(0)
+      end
+      found.should be_true
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
+
+  describe "TypeDefinition handler integration" do
+    it "returns type definition via textDocument/typeDefinition" do
+      client = TestClient.new
+      client.initialize_server
+
+      code = "class Zxq\nend\nx = Zxq.new\n"
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/typedef.cr", languageId: "crystal", version: 1, text: code},
+      })
+      Fiber.yield
+
+      client.send_request(210, "textDocument/typeDefinition", {
+        textDocument: {uri: "file:///tmp/typedef.cr"},
+        position:     {line: 2, character: 4},
+      })
+      resp = client.read_response
+
+      resp["id"].should eq(210)
+      resp["result"].as_a.should be_a(Array(JSON::Any))
+      client.close
+    end
+  end
+
+  describe "Capabilities" do
+    it "advertises typeDefinitionProvider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+      resp["result"]["capabilities"]["typeDefinitionProvider"].should eq(true)
+      client.close
+    end
+  end
 end

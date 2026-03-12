@@ -179,6 +179,23 @@ module Lsp::Crystal
       end
     end
 
+    # Search for a type definition by name
+    def search_type_definition(type_name : String, &block : String, Int32, Int32 ->) : Nil
+      pattern = /^\s*(?:class|struct|module|enum|alias|annotation)\s+#{Regex.escape(type_name)}\b/
+
+      @mutex.synchronize do
+        @files.each_value do |entry|
+          entry.content.each_line.with_index do |line_text, line_num|
+            if pattern.match(line_text)
+              col = line_text.index(type_name)
+              next unless col
+              yield entry.uri, line_num, col
+            end
+          end
+        end
+      end
+    end
+
     def file_count : Int32
       @mutex.synchronize { @files.size }
     end

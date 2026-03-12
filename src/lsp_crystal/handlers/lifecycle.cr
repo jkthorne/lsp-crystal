@@ -24,6 +24,7 @@ module Lsp::Crystal::Handlers
           },
           hoverProvider:              true,
           definitionProvider:         true,
+          typeDefinitionProvider:     true,
           documentFormattingProvider: true,
           documentSymbolProvider:     true,
           signatureHelpProvider:      {

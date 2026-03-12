@@ -66,6 +66,9 @@ module Lsp::Crystal
       @handlers["textDocument/rename"] = Handler.new { |server, msg| Handlers::Rename.handle(server, msg) }
       @handlers["textDocument/prepareRename"] = Handler.new { |server, msg| Handlers::Rename.prepare(server, msg) }
 
+      # Phase 14: Type Definition
+      @handlers["textDocument/typeDefinition"] = Handler.new { |server, msg| Handlers::TypeDefinition.handle(server, msg) }
+
       # Phase 13: Semantic Tokens, Call Hierarchy, Inlay Hints, Code Lens
       @handlers["textDocument/semanticTokens/full"] = Handler.new { |server, msg| Handlers::SemanticTokens.full(server, msg) }
       @handlers["textDocument/prepareCallHierarchy"] = Handler.new { |server, msg| Handlers::CallHierarchy.prepare(server, msg) }

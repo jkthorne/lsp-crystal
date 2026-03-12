@@ -167,6 +167,9 @@ module Lsp::Crystal
       @handlers["textDocument/inlayHint"] = Handler.new { |server, msg| Handlers::InlayHints.handle(server, msg) }
       @handlers["textDocument/codeLens"] = Handler.new { |server, msg| Handlers::CodeLens.handle(server, msg) }
 
+      # Linked Editing Range
+      @handlers["textDocument/linkedEditingRange"] = Handler.new { |server, msg| Handlers::LinkedEditingRange.handle(server, msg) }
+
       # Configuration
       @handlers["workspace/didChangeConfiguration"] = Handler.new { |server, msg| Handlers::Configuration.did_change(server, msg) }
       @handlers["workspace/didChangeWorkspaceFolders"] = Handler.new { |server, msg| Handlers::WorkspaceFolders.did_change(server, msg) }

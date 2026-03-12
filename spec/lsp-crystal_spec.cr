@@ -4131,4 +4131,120 @@ describe Lsp::Crystal do
       config.diagnostics_suppressed_patterns.should be_empty
     end
   end
+
+  describe "Providers::LinkedEditingRange" do
+    it "returns ranges for def...end" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "def foo\n  42\nend\n")
+      result = Lsp::Crystal::Providers::LinkedEditingRange.run(doc, 0, 1)
+      result.should_not be_nil
+      result.not_nil!.ranges.size.should eq(2)
+      result.not_nil!.ranges[0].start.line.should eq(0)
+      result.not_nil!.ranges[1].start.line.should eq(2)
+    end
+
+    it "returns ranges when cursor is on end" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "def foo\n  42\nend\n")
+      result = Lsp::Crystal::Providers::LinkedEditingRange.run(doc, 2, 1)
+      result.should_not be_nil
+      result.not_nil!.ranges.size.should eq(2)
+      result.not_nil!.ranges[0].start.line.should eq(0)
+      result.not_nil!.ranges[1].start.line.should eq(2)
+    end
+
+    it "returns ranges for if...end" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "if true\n  42\nend\n")
+      result = Lsp::Crystal::Providers::LinkedEditingRange.run(doc, 0, 1)
+      result.should_not be_nil
+      result.not_nil!.ranges.size.should eq(2)
+    end
+
+    it "handles nested blocks correctly" do
+      code = "class Foo\n  def bar\n    42\n  end\nend\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+
+      # Cursor on class
+      result = Lsp::Crystal::Providers::LinkedEditingRange.run(doc, 0, 1)
+      result.should_not be_nil
+      result.not_nil!.ranges[0].start.line.should eq(0)
+      result.not_nil!.ranges[1].start.line.should eq(4)
+
+      # Cursor on def
+      result = Lsp::Crystal::Providers::LinkedEditingRange.run(doc, 1, 3)
+      result.should_not be_nil
+      result.not_nil!.ranges[0].start.line.should eq(1)
+      result.not_nil!.ranges[1].start.line.should eq(3)
+    end
+
+    it "returns nil for postfix if" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "x = 1 if true\n")
+      result = Lsp::Crystal::Providers::LinkedEditingRange.run(doc, 0, 7)
+      result.should be_nil
+    end
+
+    it "returns nil when cursor is not on a keyword" do
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, "def foo\n  x = 42\nend\n")
+      result = Lsp::Crystal::Providers::LinkedEditingRange.run(doc, 1, 3)
+      result.should be_nil
+    end
+  end
+
+  describe "LinkedEditingRange handler integration" do
+    it "handles textDocument/linkedEditingRange" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {
+          uri:        "file:///tmp/test_linked.cr",
+          languageId: "crystal",
+          version:    1,
+          text:       "def foo\n  42\nend\n",
+        },
+      })
+      Fiber.yield
+
+      client.send_request(10, "textDocument/linkedEditingRange", {
+        textDocument: {uri: "file:///tmp/test_linked.cr"},
+        position:     {line: 0, character: 1},
+      })
+      resp = client.read_response
+      resp["result"].should_not be_nil
+      resp["result"]["ranges"].as_a.size.should eq(2)
+      client.close
+    end
+
+    it "returns null when not on keyword" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {
+          uri:        "file:///tmp/test_linked2.cr",
+          languageId: "crystal",
+          version:    1,
+          text:       "x = 42\n",
+        },
+      })
+      Fiber.yield
+
+      client.send_request(11, "textDocument/linkedEditingRange", {
+        textDocument: {uri: "file:///tmp/test_linked2.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+      resp["result"].raw.should be_nil
+      client.close
+    end
+  end
+
+  describe "LinkedEditingRange capability" do
+    it "advertises linkedEditingRangeProvider" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      resp = client.read_response
+      caps = resp["result"]["capabilities"]
+      caps["linkedEditingRangeProvider"].should eq(true)
+      client.close
+    end
+  end
 end

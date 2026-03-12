@@ -26,7 +26,12 @@ require "../src/lsp_crystal/providers/implementation"
 require "../src/lsp_crystal/providers/references"
 require "../src/lsp_crystal/providers/code_action"
 require "../src/lsp_crystal/providers/rename"
+require "../src/lsp_crystal/providers/semantic_tokens"
+require "../src/lsp_crystal/providers/call_hierarchy"
+require "../src/lsp_crystal/providers/inlay_hints"
+require "../src/lsp_crystal/providers/code_lens"
 require "../src/lsp_crystal/workspace_index"
+require "../src/lsp_crystal/configuration"
 require "../src/lsp_crystal/handlers/lifecycle"
 require "../src/lsp_crystal/handlers/text_sync"
 require "../src/lsp_crystal/handlers/formatting"
@@ -43,6 +48,12 @@ require "../src/lsp_crystal/handlers/implementation"
 require "../src/lsp_crystal/handlers/references"
 require "../src/lsp_crystal/handlers/code_action"
 require "../src/lsp_crystal/handlers/rename"
+require "../src/lsp_crystal/handlers/semantic_tokens"
+require "../src/lsp_crystal/handlers/call_hierarchy"
+require "../src/lsp_crystal/handlers/inlay_hints"
+require "../src/lsp_crystal/handlers/code_lens"
+require "../src/lsp_crystal/handlers/configuration"
+require "../src/lsp_crystal/handlers/workspace_folders"
 require "../src/lsp_crystal/dispatcher"
 require "../src/lsp_crystal/server"
 
@@ -103,6 +114,26 @@ class TestClient
     when timeout(timeout)
       nil
     end
+  end
+
+  def try_read_notification(timeout : Time::Span = 100.milliseconds) : JSON::Any?
+    ch = Channel(JSON::Any?).new(1)
+    spawn do
+      ch.send(read_raw_message)
+    rescue
+      ch.send(nil)
+    end
+    select
+    when result = ch.receive
+      result
+    when timeout(timeout)
+      nil
+    end
+  end
+
+  def send_raw(data : String)
+    @input_write << data
+    @input_write.flush
   end
 
   def initialize_server

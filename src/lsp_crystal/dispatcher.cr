@@ -65,6 +65,18 @@ module Lsp::Crystal
       @handlers["textDocument/codeAction"] = Handler.new { |server, msg| Handlers::CodeAction.handle(server, msg) }
       @handlers["textDocument/rename"] = Handler.new { |server, msg| Handlers::Rename.handle(server, msg) }
       @handlers["textDocument/prepareRename"] = Handler.new { |server, msg| Handlers::Rename.prepare(server, msg) }
+
+      # Phase 13: Semantic Tokens, Call Hierarchy, Inlay Hints, Code Lens
+      @handlers["textDocument/semanticTokens/full"] = Handler.new { |server, msg| Handlers::SemanticTokens.full(server, msg) }
+      @handlers["textDocument/prepareCallHierarchy"] = Handler.new { |server, msg| Handlers::CallHierarchy.prepare(server, msg) }
+      @handlers["callHierarchy/incomingCalls"] = Handler.new { |server, msg| Handlers::CallHierarchy.incoming_calls(server, msg) }
+      @handlers["callHierarchy/outgoingCalls"] = Handler.new { |server, msg| Handlers::CallHierarchy.outgoing_calls(server, msg) }
+      @handlers["textDocument/inlayHint"] = Handler.new { |server, msg| Handlers::InlayHints.handle(server, msg) }
+      @handlers["textDocument/codeLens"] = Handler.new { |server, msg| Handlers::CodeLens.handle(server, msg) }
+
+      # Configuration
+      @handlers["workspace/didChangeConfiguration"] = Handler.new { |server, msg| Handlers::Configuration.did_change(server, msg) }
+      @handlers["workspace/didChangeWorkspaceFolders"] = Handler.new { |server, msg| Handlers::WorkspaceFolders.did_change(server, msg) }
     end
   end
 end

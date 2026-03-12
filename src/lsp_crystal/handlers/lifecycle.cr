@@ -37,6 +37,16 @@ module Lsp::Crystal::Handlers
           referencesProvider:        true,
           codeActionProvider:        true,
           renameProvider:            {prepareProvider: true},
+          semanticTokensProvider:    {
+            legend: {
+              tokenTypes:     Providers::SemanticTokens::TOKEN_TYPES,
+              tokenModifiers: Providers::SemanticTokens::TOKEN_MODIFIERS,
+            },
+            full: true,
+          },
+          callHierarchyProvider:    true,
+          inlayHintProvider:        true,
+          codeLensProvider:         {resolveProvider: false},
         },
         serverInfo: {
           name:    "crystal-lsp",

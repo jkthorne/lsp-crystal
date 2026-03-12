@@ -2,8 +2,8 @@
 
 ## Current State (v0.2.0)
 
-- **~5,800 LOC** source, **~4,200 LOC** specs, **287 passing tests**
-- 20 providers, 24 handlers, 0 external dependencies (Crystal stdlib only)
+- **~6,400 LOC** source, **~4,550 LOC** specs, **313 passing tests**
+- 23 providers, 27 handlers, 0 external dependencies (Crystal stdlib only)
 - Clean layered architecture: Transport → Dispatcher → Handlers → Providers → CrystalTool / AST
 - Crystal AST integration via `compiler/crystal/syntax` — zero external dependencies maintained
 - Two-tier async dispatch: slow crystal-tool requests run in fibers, fast requests stay synchronous
@@ -27,10 +27,10 @@
 | Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` |
 | Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) |
 | Navigation | `definition`, `typeDefinition`, `implementation`, `references` |
-| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction` |
+| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` |
 | Symbols | `documentSymbol`, `workspace/symbol` |
 | Intelligence | `semanticTokens/full`, `documentHighlight`, `foldingRange`, `selectionRange` |
-| Advanced | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `inlayHint`, `codeLens` |
+| Advanced | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`, `inlayHint`, `codeLens` |
 | Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles`, `window/workDoneProgress` |
 | Concurrency | `$/cancelRequest`, async dispatch for slow methods |
 
@@ -48,6 +48,7 @@
 - Idle background pre-compilation: warms OS/compiler caches after 5s idle, cancelled on edit, configurable via `precompileOnIdle`
 - Active file priority: most recently edited file gets diagnosed first
 - Configurable debounce via `diagnosticsDelay` setting (500ms default)
+- Diagnostic severity filtering (`diagnosticsMinSeverity`) and message pattern suppression (`diagnosticsSuppressedPatterns`)
 - Mutex-protected diagnostics with channel-based debouncing
 - Content-Length validation (10MB max)
 - Background workspace indexing with incremental updates
@@ -70,6 +71,7 @@ All five original plan phases plus high-impact improvements are complete:
 - **Phase 6 — Concurrency & Responsiveness:** Async dispatch with CancellationToken, file watching via dynamic registration, diagnostics caching with content hashing, active file priority, configurable debounce
 - **Phase 7 — Crystal AST Integration:** AST-based document symbols, lexer-based semantic tokens, two-tier diagnostics (instant syntax + debounced full), AST-aware references/highlights/rename (ignores strings/comments), AST context completion, AST call hierarchy. All providers fall back to regex on parse failure.
 - **Phase 8 — Incremental Diagnostics:** Diagnostic diffing (skip identical publishes), multi-file error routing, require dependency graph with targeted invalidation, idle background pre-compilation for cache warming.
+- **Phase 9 — Medium-Impact Features:** Diagnostic severity configuration, linked editing ranges for block/end pairs, type hierarchy (supertypes/subtypes), enhanced code actions (generate method stub, add missing require, convert to multi-line block).
 
 ---
 

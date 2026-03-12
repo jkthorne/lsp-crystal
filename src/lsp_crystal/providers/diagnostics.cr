@@ -63,7 +63,13 @@ module Lsp::Crystal::Providers
     end
 
     def self.parse_output(output : String) : Array(Diagnostic)
-      diagnostics = [] of Diagnostic
+      by_file = parse_output_by_file(output)
+      by_file.values.flatten
+    end
+
+    # Groups diagnostics by file path from crystal build output
+    def self.parse_output_by_file(output : String) : Hash(String, Array(Diagnostic))
+      result = Hash(String, Array(Diagnostic)).new
       seen = Set(String).new
 
       lines = output.lines
@@ -111,7 +117,7 @@ module Lsp::Crystal::Providers
             key = "#{file}:#{line_num}:#{col}:#{message_text}"
             unless seen.includes?(key)
               seen.add(key)
-              diagnostics << Diagnostic.new(
+              diag = Diagnostic.new(
                 range: Range.new(
                   start: Position.new(line: line_num, character: col),
                   end_pos: Position.new(line: line_num, character: col)
@@ -120,6 +126,7 @@ module Lsp::Crystal::Providers
                 source: "crystal",
                 message: message_text
               )
+              (result[file] ||= [] of Diagnostic) << diag
             end
           else
             i = j
@@ -129,7 +136,7 @@ module Lsp::Crystal::Providers
         end
       end
 
-      diagnostics
+      result
     end
   end
 end

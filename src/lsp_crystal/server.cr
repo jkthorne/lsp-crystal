@@ -21,6 +21,8 @@ module Lsp::Crystal
     @diagnostics_hashes_mutex : Mutex
     @published_diagnostics : Hash(String, Array(Providers::Diagnostics::Diagnostic))
     @published_diagnostics_mutex : Mutex
+    @last_diagnostics_files : Hash(String, Set(String))
+    @last_diagnostics_files_mutex : Mutex
     @active_uri : String?
     @next_request_id : Atomic(Int64)
 
@@ -38,6 +40,8 @@ module Lsp::Crystal
       @diagnostics_hashes_mutex = Mutex.new
       @published_diagnostics = Hash(String, Array(Providers::Diagnostics::Diagnostic)).new
       @published_diagnostics_mutex = Mutex.new
+      @last_diagnostics_files = Hash(String, Set(String)).new
+      @last_diagnostics_files_mutex = Mutex.new
       @next_request_id = Atomic(Int64).new(1_i64)
       @shutdown_channel = Channel(Nil).new(1)
       spawn_diagnostics_worker
@@ -284,18 +288,51 @@ module Lsp::Crystal
       file_path = doc.path
       Log.debug { "Running diagnostics for #{file_path}" }
 
-      diagnostics = if File.exists?(file_path) && File.read(file_path) == doc.content
-                      Providers::Diagnostics.run(file_path)
-                    else
-                      Providers::Diagnostics.run_content(doc.content, file_path)
-                    end
+      result = if File.exists?(file_path) && File.read(file_path) == doc.content
+                 CrystalTool.check(file_path)
+               else
+                 CrystalTool.check_content(doc.content, file_path)
+               end
 
       # Store hash after successful run
       @diagnostics_hashes_mutex.synchronize { @diagnostics_hashes[uri] = content_hash }
 
-      publish_diagnostics_if_changed(uri, diagnostics)
+      if result.success
+        # Clear diagnostics for triggering file
+        publish_diagnostics_if_changed(uri, [] of Providers::Diagnostics::Diagnostic)
+        # Clear diagnostics for files that had errors in the previous run
+        clear_stale_file_diagnostics(uri, Set(String).new)
+      else
+        diags_by_file = Providers::Diagnostics.parse_output_by_file(result.stderr)
+
+        # Publish diagnostics routed to each file
+        new_files = Set(String).new
+        diags_by_file.each do |diag_path, diags|
+          diag_uri = URI.path_to_uri(diag_path)
+          new_files << diag_uri
+          publish_diagnostics_if_changed(diag_uri, diags)
+        end
+
+        # If the triggering file had no errors itself, clear it
+        unless new_files.includes?(uri)
+          publish_diagnostics_if_changed(uri, [] of Providers::Diagnostics::Diagnostic)
+        end
+
+        # Clear diagnostics for files that had errors last time but not now
+        clear_stale_file_diagnostics(uri, new_files)
+      end
     rescue ex
       Log.error { "Diagnostics error for #{uri}: #{ex.message}" }
+    end
+
+    private def clear_stale_file_diagnostics(trigger_uri : String, current_files : Set(String)) : Nil
+      previous_files = @last_diagnostics_files_mutex.synchronize { @last_diagnostics_files[trigger_uri]? }
+      if previous_files
+        (previous_files - current_files).each do |stale_uri|
+          publish_diagnostics_if_changed(stale_uri, [] of Providers::Diagnostics::Diagnostic)
+        end
+      end
+      @last_diagnostics_files_mutex.synchronize { @last_diagnostics_files[trigger_uri] = current_files }
     end
   end
 end

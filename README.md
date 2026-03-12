@@ -18,9 +18,9 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 ### Editing
 - **Completion** — Keywords, snippets, and context-aware dot-completion (trigger: `.`, `:`, `@`)
 - **Signature Help** — Method signature display with active parameter tracking (trigger: `(`, `,`)
-- **Hover** — Type information and documentation comments via `crystal tool context`
+- **Hover** — Type information and documentation comments via `crystal tool context`, with parallel tool dispatch for faster results
 - **Rename** — Type-aware workspace-wide symbol renaming with prepare support
-- **Code Actions** — Quick fix for unused variables, generate method stubs, add missing requires, organize/sort requires, extract variable/method, convert to multi-line block
+- **Code Actions** — Quick fix for unused variables, generate method stubs, add missing requires, organize/sort requires, extract variable/method, convert to multi-line block, expand macro
 - **Linked Editing** — Simultaneous editing of block keywords and their matching `end`
 - **Formatting** — Code formatting via `crystal tool format` (full document and range)
 - **On-Type Formatting** — Auto-insert `end` after block-opening keywords
@@ -30,7 +30,7 @@ A Language Server Protocol (LSP) implementation for Crystal, written in Crystal 
 ### Code Intelligence
 - **Diagnostics** — Real-time error and warning reporting via `crystal build --no-codegen` with 500ms debounce, configurable severity filtering and pattern suppression
 - **Semantic Tokens** — Token-level syntax highlighting with delta encoding (only changed tokens sent on edits)
-- **Macro Intelligence** — Pattern-based expansion of `property`, `getter`, `setter`, and `record` macros — generated methods appear in completion, symbols, and hover
+- **Macro Intelligence** — Tier 1: instant pattern-based expansion of `property`, `getter`, `setter`, and `record` macros. Tier 2: arbitrary user-defined macro expansion via `crystal tool expand` with result caching (non-blocking). Expanded symbols are indexed for go-to-definition and workspace search. Explicit "Expand macro" command available via code actions
 - **Cross-File AST Index** — Persistent in-memory index of all workspace symbols, updated incrementally on edits. Powers instant cross-file references, go-to-definition, rename, and workspace symbol search without compiler invocations
 - **Document Highlight** — Highlight all occurrences of a symbol with read/write classification
 - **Folding Ranges** — Fold blocks, consecutive requires, and comment sections
@@ -101,14 +101,17 @@ Handlers (extract params, call provider, format response)
   |
 Providers (business logic)
   |
-CrystalTool      DocumentStore     AST::Index
-(spawns crystal)  (in-memory docs)  (cross-file symbols)
+CrystalTool        DocumentStore     AST::Index       ToolResultCache
+(spawns crystal,   (in-memory docs)  (cross-file      (LRU cache for
+ coalescing)                          symbols)          tool results)
 ```
 
 Key design decisions:
 - Zero external dependencies — Crystal stdlib only
 - All LSP types use `JSON::Serializable` with camelCase field mapping
 - Main fiber reads stdin synchronously; diagnostics run in spawned fibers with 500ms debounce
+- Hover runs context and implementations in parallel; request coalescing deduplicates concurrent identical tool invocations
+- Tool result cache (LRU, 60s TTL) eliminates redundant compiler invocations
 - Unsaved files use stdin for formatting, temp files for diagnostics
 - Project root detected via `shard.yml` targets
 

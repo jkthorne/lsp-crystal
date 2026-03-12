@@ -2,8 +2,8 @@
 
 ## Current State
 
-- **8,082 LOC** source across 77 files, **5,169 LOC** specs, **352 passing tests**
-- 23 providers, 26 handlers, 5 AST visitors, 0 external dependencies
+- **8,686 LOC** source across 80 files, **5,623 LOC** specs, **389 passing tests**
+- 23 providers, 28 handlers, 5 AST visitors, 0 external dependencies
 - Crystal >= 1.19.1, stdlib only (includes `compiler/crystal/syntax`)
 - MIT licensed, CI on Crystal latest + nightly
 
@@ -21,7 +21,8 @@ Dispatcher (lazy-init, routes methods → handlers)
 Handlers (26 files — extract params, call provider, format response)
     │
 Providers (22 files — business logic)
-    ├─ CrystalTool (compiler invocations, 30s timeout, cancellation)
+    ├─ CrystalTool (compiler invocations, 30s timeout, cancellation, request coalescing)
+    ├─ ToolResultCache (LRU cache for tool results, 500 entries, 60s TTL)
     ├─ DocumentStore (in-memory incremental editing)
     ├─ AST subsystem (parser, cache, lexer tokenizer, 5 visitors)
     ├─ AST::Index (persistent cross-file symbol index, background parsing)
@@ -29,7 +30,7 @@ Providers (22 files — business logic)
     └─ RequireGraph (dependency edges, BFS transitive dependents)
 ```
 
-**Concurrency model:** Main fiber reads stdin synchronously. Slow methods (definition, hover, formatting, rename, diagnostics) run in spawned fibers with `CancellationToken` support. Diagnostics use mutex-protected channel-based debouncing (500ms default).
+**Concurrency model:** Main fiber reads stdin synchronously. Slow methods (definition, hover, formatting, rename, diagnostics) run in spawned fibers with `CancellationToken` support. Diagnostics use mutex-protected channel-based debouncing (500ms default). Hover runs `context` and `implementations` in parallel via spawned fibers. Request coalescing deduplicates concurrent identical `crystal tool` invocations.
 
 **AST integration:** Per-document AST cache keyed by URI + version. Persistent cross-file AST index parses all workspace `.cr` files at startup (batched, ~1ms/file) and updates incrementally on edits. Two-tier diagnostics: instant syntax errors via `Crystal::Parser`, debounced full build via `crystal build --no-codegen`. All AST-enhanced providers fall back to regex on parse failure.
 
@@ -48,7 +49,7 @@ Providers (22 files — business logic)
 | Symbols | `documentSymbol`, `workspace/symbol` |
 | Intelligence | `semanticTokens/full`, `semanticTokens/full/delta`, `documentHighlight`, `foldingRange`, `selectionRange` |
 | Hierarchy | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` |
-| Extras | `inlayHint`, `codeLens`, `codeLens/resolve`, `documentLink`, `documentColor`, `colorPresentation` |
+| Extras | `inlayHint`, `codeLens`, `codeLens/resolve`, `documentLink`, `documentColor`, `colorPresentation`, `workspace/executeCommand` |
 | Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles`, `window/workDoneProgress` |
 | Concurrency | `$/cancelRequest`, async dispatch for slow methods |
 
@@ -56,7 +57,7 @@ Providers (22 files — business logic)
 
 | Provider | LOC | Capabilities |
 |----------|-----|-------------|
-| code_action | 486 | Unused var fix, method stub, add require, organize requires, extract variable/method, convert block |
+| code_action | 529 | Unused var fix, method stub, add require, organize requires, extract variable/method, convert block, expand macro |
 | completion | 360 | Keywords, snippets, context-aware dot-completion (`.`, `:`, `@` triggers) |
 | call_hierarchy | 354 | Incoming/outgoing calls, AST-based with regex fallback |
 | semantic_tokens | 370 | Lexer-based tokenization, 10+ token types, delta encoding with token cache |
@@ -70,7 +71,7 @@ Providers (22 files — business logic)
 | document_highlight | 123 | Read/write occurrence classification |
 | folding_range | 119 | Blocks, requires, comment sections |
 | references | 125 | AST in-document, AST index cross-file with regex fallback |
-| hover | 140 | Type info + doc comments, macro expansion info, AST index doc lookup |
+| hover | 316 | Type info + doc comments, Tier 1 pattern macro expansion, Tier 2 crystal tool expand (cached, non-blocking), parallel tool dispatch, AST index doc lookup |
 | type_definition | 102 | Navigate to variable/expression type |
 | linked_editing_range | 99 | Block keyword ↔ `end` simultaneous editing |
 | code_lens | 94 | Reference counts above methods/classes |
@@ -86,7 +87,9 @@ Providers (22 files — business logic)
 - **Diagnostics:** Content-hash caching, diff-based publishing (no editor flicker), multi-file error routing, active file priority, configurable debounce/severity/pattern suppression
 - **File watching:** Dynamic `client/registerCapability` for `**/*.cr`; detects external changes
 - **RequireGraph:** Resolves relative/absolute/glob/directory requires; BFS transitive dependents; targeted invalidation on file changes
-- **Background tasks:** Idle pre-compilation (5s), workspace indexing with incremental updates
+- **Tool result cache:** LRU (500 entries, 60s TTL) caching of `crystal tool` results; avoids redundant compiler invocations for hover, definition, and expand at the same position
+- **Request coalescing:** Concurrent identical tool invocations deduplicate — first runs the process, others wait for its result
+- **Background tasks:** Idle pre-compilation (5s), workspace indexing with incremental updates, background macro expansion
 - **Logging:** Structured JSON with request ID and duration tracing
 - **Shutdown:** SIGTERM/SIGINT graceful handling with in-flight request cancellation
 
@@ -107,6 +110,7 @@ Providers (22 files — business logic)
 | 9 | Medium Features | Severity config, linked editing, type hierarchy, enhanced code actions |
 | 10 | Low Features | Range formatting, on-type formatting, document links, color provider |
 | 11 | Advanced Intelligence | Semantic tokens delta, macro-aware intelligence, persistent cross-file AST index |
+| 12 | Compiler Acceleration | Tool result cache, request coalescing, parallel hover dispatch, Tier 2 macro expand via `crystal tool expand`, expand command, auto-disable on failure |
 
 ---
 
@@ -116,7 +120,7 @@ Providers (22 files — business logic)
 
 2. **Cross-file references partially AST-based** — Cross-file references now use the persistent AST index for accurate results, with regex fallback when the index is not ready or for files that fail to parse. Complex overloaded methods may still require `crystal tool` for full resolution.
 
-3. **Macro expansion is pattern-based** — Common Crystal macros (`property`, `getter`, `setter`, `record`) are recognized and expanded via pattern matching. Arbitrary user-defined macros are not supported — only `crystal tool` invocations can expand those.
+3. **Macro expansion is two-tier** — Tier 1: Common macros (`property`, `getter`, `setter`, `record`) are expanded instantly via pattern matching. Tier 2: Arbitrary user-defined macros are expanded via `crystal tool expand` with result caching (non-blocking, background). Tier 2 requires a compilable project and adds latency on first hover; subsequent hovers serve from cache. Auto-disables after 3 consecutive failures.
 
 4. **Single-project scope** — The server assumes one Crystal project per workspace root (detected via `shard.yml`). Multi-root workspaces with independent shards are not fully supported.
 
@@ -128,11 +132,9 @@ Providers (22 files — business logic)
 
 ### High Impact
 
-**Macro expansion Tier 2 — `crystal tool expand`**
-The current pattern-based macro expander handles common macros. A second tier could invoke `crystal tool expand` for arbitrary user-defined macros and feed results into the AST subsystem. This would cover the long tail of custom macros at the cost of a compiler invocation.
+**~~Macro expansion Tier 2~~ (done)** — Implemented via `crystal tool expand` with LRU caching, non-blocking background expansion, and auto-disable on failure. Expanded symbols are indexed into the AST index.
 
-**Incremental compilation / persistent compiler state**
-Explore maintaining a persistent Crystal compiler instance to avoid cold-start overhead on each `crystal tool` invocation. Would dramatically speed up definition, hover, and diagnostics for large projects.
+**~~Compiler acceleration~~ (done)** — Tool result cache (LRU, 500 entries, 60s TTL), request coalescing for concurrent identical invocations, and parallel hover dispatch. Crystal has no daemon mode, so true incremental compilation isn't possible, but these optimizations eliminate redundant work.
 
 ### Medium Impact
 
@@ -168,9 +170,9 @@ Implement `textDocument/declaration` as distinct from definition, pointing to fo
 
 | Metric | Value |
 |--------|-------|
-| Source LOC | 8,082 |
-| Spec LOC | 5,169 |
-| Tests passing | 352 |
+| Source LOC | 8,686 |
+| Spec LOC | 5,623 |
+| Tests passing | 389 |
 | Tests failing | 0 |
 | External deps | 0 |
 | Crystal version | >= 1.19.1 |

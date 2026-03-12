@@ -2219,4 +2219,46 @@ describe Lsp::Crystal do
       FileUtils.rm_rf(dir) if dir
     end
   end
+
+  describe "Providers::Hover improved" do
+    it "extracts doc comments above a definition" do
+      dir = File.tempname("hover_doc_test")
+      Dir.mkdir_p(dir)
+      code = "# This is a documented method\n# It does important things\ndef my_documented_method\n  42\nend\n"
+      file_path = File.join(dir, "test.cr")
+      File.write(file_path, code)
+
+      comments = Lsp::Crystal::Providers::Hover.extract_comments_above(file_path, 2)
+      comments.should_not be_nil
+      comments.not_nil!.should contain("documented method")
+      comments.not_nil!.should contain("important things")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "returns nil when no comments above" do
+      dir = File.tempname("hover_doc_test")
+      Dir.mkdir_p(dir)
+      code = "x = 1\ndef no_docs\n  42\nend\n"
+      file_path = File.join(dir, "test.cr")
+      File.write(file_path, code)
+
+      comments = Lsp::Crystal::Providers::Hover.extract_comments_above(file_path, 1)
+      comments.should be_nil
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "returns nil for line 0" do
+      dir = File.tempname("hover_doc_test")
+      Dir.mkdir_p(dir)
+      file_path = File.join(dir, "test.cr")
+      File.write(file_path, "def first_line\nend\n")
+
+      comments = Lsp::Crystal::Providers::Hover.extract_comments_above(file_path, 0)
+      comments.should be_nil
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
 end

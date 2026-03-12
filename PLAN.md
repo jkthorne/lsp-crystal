@@ -27,10 +27,10 @@
 | Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` |
 | Document Sync | `didOpen`, `didChange`, `didSave`, `didClose` (incremental) |
 | Navigation | `definition`, `typeDefinition`, `implementation`, `references` |
-| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `codeAction`, `linkedEditingRange` |
+| Editing | `completion`, `signatureHelp`, `hover`, `rename`, `prepareRename`, `formatting`, `rangeFormatting`, `onTypeFormatting`, `codeAction`, `linkedEditingRange` |
 | Symbols | `documentSymbol`, `workspace/symbol` |
 | Intelligence | `semanticTokens/full`, `documentHighlight`, `foldingRange`, `selectionRange` |
-| Advanced | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`, `inlayHint`, `codeLens` |
+| Advanced | `prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, `prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`, `inlayHint`, `codeLens`, `documentLink`, `documentColor`, `colorPresentation` |
 | Workspace | `didChangeConfiguration`, `didChangeWorkspaceFolders`, `didChangeWatchedFiles`, `window/workDoneProgress` |
 | Concurrency | `$/cancelRequest`, async dispatch for slow methods |
 
@@ -72,6 +72,7 @@ All five original plan phases plus high-impact improvements are complete:
 - **Phase 7 — Crystal AST Integration:** AST-based document symbols, lexer-based semantic tokens, two-tier diagnostics (instant syntax + debounced full), AST-aware references/highlights/rename (ignores strings/comments), AST context completion, AST call hierarchy. All providers fall back to regex on parse failure.
 - **Phase 8 — Incremental Diagnostics:** Diagnostic diffing (skip identical publishes), multi-file error routing, require dependency graph with targeted invalidation, idle background pre-compilation for cache warming.
 - **Phase 9 — Medium-Impact Features:** Diagnostic severity configuration, linked editing ranges for block/end pairs, type hierarchy (supertypes/subtypes), enhanced code actions (generate method stub, add missing require, convert to multi-line block).
+- **Phase 10 — Low-Impact Features:** Range formatting (format selected regions), on-type formatting (auto-insert `end` after block keywords), document links (clickable `require` paths), color provider (hex color literal previews).
 
 ---
 
@@ -92,8 +93,8 @@ Potential improvements if the project continues beyond 1.0:
 - ~~**Workspace edits** — Multi-file refactoring support beyond rename.~~
 - ~~**Diagnostic severity configuration** — Let users suppress specific warning categories.~~
 
-### Low Impact
-- **Range formatting** — Format selected regions instead of whole file.
-- **On-type formatting** — Auto-format as the user types.
-- **Document links** — Make `require` paths clickable.
-- **Color provider** — Preview color literals in the gutter.
+### Low Impact (Phase 10 — Complete)
+- ~~**Range formatting** — Format selected regions instead of whole file.~~
+- ~~**On-type formatting** — Auto-format as the user types.~~
+- ~~**Document links** — Make `require` paths clickable.~~
+- ~~**Color provider** — Preview color literals in the gutter.~~

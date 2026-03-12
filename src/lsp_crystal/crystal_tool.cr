@@ -1,5 +1,7 @@
 module Lsp::Crystal
   class CrystalTool
+    DEFAULT_TIMEOUT = 30.seconds
+
     struct ToolResult
       property success : Bool
       property stdout : String
@@ -9,19 +11,48 @@ module Lsp::Crystal
       end
     end
 
-    def self.run(args : Array(String), input : String? = nil) : ToolResult
+    def self.run(args : Array(String), input : String? = nil, timeout : Time::Span = DEFAULT_TIMEOUT) : ToolResult
       stdout_io = IO::Memory.new
       stderr_io = IO::Memory.new
 
       begin
-        status = Process.run(
+        process = Process.new(
           "crystal",
           args,
           output: stdout_io,
           error: stderr_io,
-          input: input ? IO::Memory.new(input) : Process::Redirect::Close
+          input: input ? Process::Redirect::Pipe : Process::Redirect::Close
         )
-        ToolResult.new(status.success?, stdout_io.to_s, stderr_io.to_s)
+
+        if input && (stdin = process.input?)
+          stdin.print(input)
+          stdin.close
+        end
+
+        timed_out = false
+        done_channel = Channel(Nil).new(1)
+
+        spawn do
+          sleep timeout
+          unless done_channel.closed?
+            timed_out = true
+            process.terminate rescue nil
+            # Give it a moment to exit gracefully, then force kill
+            spawn do
+              sleep 2.seconds
+              process.signal(Signal::KILL) rescue nil
+            end
+          end
+        end
+
+        status = process.wait
+        done_channel.close
+
+        if timed_out
+          ToolResult.new(false, "", "Crystal tool timed out after #{timeout.total_seconds.to_i}s")
+        else
+          ToolResult.new(status.success?, stdout_io.to_s, stderr_io.to_s)
+        end
       rescue ex
         ToolResult.new(false, "", ex.message || "Failed to run crystal")
       end
@@ -35,14 +66,17 @@ module Lsp::Crystal
     # Type-check in-memory content using a temp file
     def self.check_content(content : String, filename : String) : ToolResult
       temp = File.tempname("crystal-lsp", ".cr")
-      File.write(temp, content)
-      result = check(temp)
-      File.delete(temp) rescue nil
-      ToolResult.new(
-        result.success,
-        result.stdout.gsub(temp, filename),
-        result.stderr.gsub(temp, filename)
-      )
+      begin
+        File.write(temp, content)
+        result = check(temp)
+        ToolResult.new(
+          result.success,
+          result.stdout.gsub(temp, filename),
+          result.stderr.gsub(temp, filename)
+        )
+      ensure
+        File.delete(temp) rescue nil
+      end
     end
 
     # Get type context at cursor position

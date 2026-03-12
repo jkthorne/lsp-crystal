@@ -57,11 +57,11 @@
 
 **Goal: Usable on projects with 1,000+ files.**
 
-- [ ] File index cache — maintain in-memory list of `.cr` files, invalidate on `didChangeWatchedFiles`
-- [ ] Symbol cache per document — cache `DocumentSymbol` results, invalidate on `didChange`
-- [ ] Workspace symbol index — background-index all files on init, update incrementally
-- [ ] References search optimization — search index instead of re-reading all files
-- [ ] Add `window/workDoneProgress` — report progress on slow operations (diagnostics, workspace search)
+- [x] File index cache — maintain in-memory list of `.cr` files, invalidate on `didChangeWatchedFiles`
+- [x] Symbol cache per document — cache `DocumentSymbol` results, invalidate on `didChange`
+- [x] Workspace symbol index — background-index all files on init, update incrementally
+- [x] References search optimization — search index instead of re-reading all files
+- [x] Add `window/workDoneProgress` — report progress on slow operations (diagnostics, workspace search)
 
 ## Phase 3: Missing Core Features
 

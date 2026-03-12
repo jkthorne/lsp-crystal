@@ -10,6 +10,8 @@ require "../src/lsp_crystal/jsonrpc/message"
 require "../src/lsp_crystal/transport/header_parser"
 require "../src/lsp_crystal/transport/stdio"
 require "../src/lsp_crystal/document_store"
+require "../src/lsp_crystal/cancellation_token"
+require "../src/lsp_crystal/request_tracker"
 require "../src/lsp_crystal/crystal_tool"
 require "../src/lsp_crystal/providers/diagnostics"
 require "../src/lsp_crystal/providers/formatting"
@@ -56,6 +58,7 @@ require "../src/lsp_crystal/handlers/inlay_hints"
 require "../src/lsp_crystal/handlers/code_lens"
 require "../src/lsp_crystal/handlers/configuration"
 require "../src/lsp_crystal/handlers/workspace_folders"
+require "../src/lsp_crystal/handlers/did_change_watched_files"
 require "../src/lsp_crystal/dispatcher"
 require "../src/lsp_crystal/server"
 
@@ -99,7 +102,10 @@ class TestClient
     loop do
       msg = read_raw_message
       # Skip notifications (no id field) — e.g. $/progress, publishDiagnostics
-      return msg if msg["id"]?
+      # Also skip server→client requests (have both id and method) — e.g. client/registerCapability
+      next unless msg["id"]?
+      next if msg["method"]?
+      return msg
     end
   end
 
@@ -142,6 +148,8 @@ class TestClient
     send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
     read_response
     send_notification("initialized")
+    # Consume the client/registerCapability request sent by the server
+    Fiber.yield
   end
 
   def close

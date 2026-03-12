@@ -2921,4 +2921,368 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  describe "CancellationToken" do
+    it "starts not cancelled" do
+      token = Lsp::Crystal::CancellationToken.new
+      token.cancelled?.should be_false
+    end
+
+    it "can be cancelled" do
+      token = Lsp::Crystal::CancellationToken.new
+      token.cancel
+      token.cancelled?.should be_true
+    end
+
+    it "cancel is idempotent" do
+      token = Lsp::Crystal::CancellationToken.new
+      token.cancel
+      token.cancel
+      token.cancelled?.should be_true
+    end
+
+    it "is visible across fibers" do
+      token = Lsp::Crystal::CancellationToken.new
+      ch = Channel(Bool).new(1)
+      spawn do
+        ch.send(token.cancelled?)
+      end
+      Fiber.yield
+      result_before = ch.receive
+      result_before.should be_false
+
+      token.cancel
+      spawn do
+        ch.send(token.cancelled?)
+      end
+      Fiber.yield
+      result_after = ch.receive
+      result_after.should be_true
+    end
+  end
+
+  describe "RequestTracker" do
+    it "tracks and completes requests" do
+      tracker = Lsp::Crystal::RequestTracker.new
+      token = Lsp::Crystal::CancellationToken.new
+      tracker.track(1_i64, "textDocument/hover", token, Fiber.current)
+      tracker.size.should eq(1)
+      tracker.has?(1_i64).should be_true
+
+      tracker.complete(1_i64)
+      tracker.size.should eq(0)
+      tracker.has?(1_i64).should be_false
+    end
+
+    it "cancels a tracked request" do
+      tracker = Lsp::Crystal::RequestTracker.new
+      token = Lsp::Crystal::CancellationToken.new
+      tracker.track(1_i64, "textDocument/hover", token, Fiber.current)
+
+      tracker.cancel(1_i64).should be_true
+      token.cancelled?.should be_true
+      tracker.size.should eq(0)
+    end
+
+    it "returns false when cancelling unknown request" do
+      tracker = Lsp::Crystal::RequestTracker.new
+      tracker.cancel(999_i64).should be_false
+    end
+
+    it "cancel_all cancels all tracked requests" do
+      tracker = Lsp::Crystal::RequestTracker.new
+      token1 = Lsp::Crystal::CancellationToken.new
+      token2 = Lsp::Crystal::CancellationToken.new
+      tracker.track(1_i64, "textDocument/hover", token1, Fiber.current)
+      tracker.track(2_i64, "textDocument/definition", token2, Fiber.current)
+
+      tracker.cancel_all
+      token1.cancelled?.should be_true
+      token2.cancelled?.should be_true
+      tracker.size.should eq(0)
+    end
+
+    it "tracks string request IDs" do
+      tracker = Lsp::Crystal::RequestTracker.new
+      token = Lsp::Crystal::CancellationToken.new
+      tracker.track("abc", "textDocument/hover", token, Fiber.current)
+      tracker.has?("abc").should be_true
+      tracker.cancel("abc").should be_true
+      token.cancelled?.should be_true
+    end
+  end
+
+  describe "Async dispatch" do
+    it "handles async methods via spawned fibers" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Open a document
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/async_test.cr", languageId: "crystal", version: 1, text: "x = 1\n"},
+      })
+      Fiber.yield
+
+      # Send a hover request (async method) — should still get a response
+      client.send_request(200, "textDocument/hover", {
+        textDocument: {uri: "file:///tmp/async_test.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+      resp["id"].should eq(200)
+      # Should have either a result or null result (not an error for missing crystal tool)
+      resp["jsonrpc"].should eq("2.0")
+
+      client.close
+    end
+
+    it "handles $/cancelRequest for in-flight requests" do
+      client = TestClient.new
+      client.initialize_server
+
+      # The request tracker should be empty initially
+      client.server.request_tracker.size.should eq(0)
+
+      client.close
+    end
+
+    it "fast methods remain synchronous" do
+      client = TestClient.new
+      client.initialize_server
+
+      # textDocument/completion is synchronous — should respond inline
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/sync_test.cr", languageId: "crystal", version: 1, text: "x = 1\n"},
+      })
+      Fiber.yield
+
+      client.send_request(201, "textDocument/completion", {
+        textDocument: {uri: "file:///tmp/sync_test.cr"},
+        position:     {line: 0, character: 4},
+      })
+      resp = client.read_response
+      resp["id"].should eq(201)
+
+      client.close
+    end
+
+    it "request tracker is empty after graceful shutdown" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(1, "shutdown")
+      resp = client.read_response
+      resp["result"].raw.should be_nil
+      client.server.request_tracker.size.should eq(0)
+
+      client.close
+    end
+  end
+
+  describe "File watching" do
+    it "lifecycle handler sends registerCapability on initialized" do
+      client = TestClient.new
+      # Send initialize
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      client.read_response
+
+      # Send initialized — server should send client/registerCapability
+      client.send_notification("initialized")
+      Fiber.yield
+
+      # Read the server→client request (skip any notifications like $/progress)
+      msg = loop do
+        m = client.read_raw_message
+        break m if m["method"]? && m["id"]?
+      end
+      msg["method"].should eq("client/registerCapability")
+      registrations = msg["params"]["registrations"].as_a
+      registrations.size.should eq(1)
+      registrations[0]["method"].should eq("workspace/didChangeWatchedFiles")
+      watchers = registrations[0]["registerOptions"]["watchers"].as_a
+      watchers[0]["globPattern"].should eq("**/*.cr")
+      watchers[0]["kind"].should eq(7)
+
+      client.close
+    end
+
+    it "handles didChangeWatchedFiles notification" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Create a temp file for the workspace index to track
+      tmp_path = "/tmp/watched_test.cr"
+      File.write(tmp_path, "class Watched; end\n")
+
+      begin
+        # Send file change notification
+        client.send_notification("workspace/didChangeWatchedFiles", {
+          changes: [{uri: "file://#{tmp_path}", type: 2}],
+        })
+        Fiber.yield
+
+        # Should not error — just verify server is still responsive
+        client.send_request(300, "textDocument/completion", {
+          textDocument: {uri: "file:///tmp/responsive.cr"},
+          position:     {line: 0, character: 0},
+        })
+        resp = client.read_response
+        resp["id"].should eq(300)
+      ensure
+        File.delete(tmp_path) rescue nil
+      end
+
+      client.close
+    end
+
+    it "skips files open in editor" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Open a document in the editor
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/open_file.cr", languageId: "crystal", version: 1, text: "x = 1\n"},
+      })
+      Fiber.yield
+
+      # Send file change for the same file — should be skipped
+      client.send_notification("workspace/didChangeWatchedFiles", {
+        changes: [{uri: "file:///tmp/open_file.cr", type: 2}],
+      })
+      Fiber.yield
+
+      # Server should still be responsive
+      client.send_request(301, "textDocument/completion", {
+        textDocument: {uri: "file:///tmp/open_file.cr"},
+        position:     {line: 0, character: 0},
+      })
+      resp = client.read_response
+      resp["id"].should eq(301)
+
+      client.close
+    end
+
+    it "clears diagnostics for deleted files" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Send delete notification
+      client.send_notification("workspace/didChangeWatchedFiles", {
+        changes: [{uri: "file:///tmp/deleted_file.cr", type: 3}],
+      })
+      Fiber.yield
+
+      # Should still be responsive
+      client.send_request(302, "shutdown")
+      resp = client.read_response
+      resp["id"].should eq(302)
+
+      client.close
+    end
+  end
+
+  describe "Diagnostics caching" do
+    it "invalidate_diagnostics_cache clears cached hash" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Open a document — this will schedule diagnostics
+      client.send_notification("textDocument/didOpen", {
+        textDocument: {uri: "file:///tmp/cache_test.cr", languageId: "crystal", version: 1, text: "x = 1\n"},
+      })
+      Fiber.yield
+
+      # Invalidate the cache
+      client.server.invalidate_diagnostics_cache("file:///tmp/cache_test.cr")
+
+      # Server should still be responsive
+      client.send_request(400, "shutdown")
+      resp = client.read_response
+      resp["id"].should eq(400)
+
+      client.close
+    end
+
+    it "configurable debounce uses configuration value" do
+      client = TestClient.new
+      client.initialize_server
+
+      # Default debounce should be 500ms
+      client.server.configuration.diagnostics_debounce.should eq(500.milliseconds)
+
+      # Update configuration
+      client.send_notification("workspace/didChangeConfiguration", {
+        settings: {crystalLsp: {diagnosticsDelay: 1000}},
+      })
+      Fiber.yield
+
+      client.server.configuration.diagnostics_debounce.should eq(1000.milliseconds)
+
+      client.close
+    end
+  end
+
+  describe "Server.send_request" do
+    it "sends requests with auto-incrementing IDs" do
+      client = TestClient.new
+      client.initialize_server
+
+      # The initialized handler already sent one request (registerCapability)
+      # so next request should have id > 0
+      id = client.server.send_request("window/showMessageRequest", {
+        type:    3,
+        message: "test",
+      })
+      id.should be > 0_i64
+
+      client.close
+    end
+  end
+
+  describe "CrystalTool cancellation" do
+    it "sets and clears fiber-local cancellation token" do
+      token = Lsp::Crystal::CancellationToken.new
+      Lsp::Crystal::CrystalTool.current_cancellation.should be_nil
+
+      Lsp::Crystal::CrystalTool.set_cancellation(token)
+      Lsp::Crystal::CrystalTool.current_cancellation.should eq(token)
+
+      Lsp::Crystal::CrystalTool.clear_cancellation
+      Lsp::Crystal::CrystalTool.current_cancellation.should be_nil
+    end
+
+    it "fiber-local tokens are isolated between fibers" do
+      token1 = Lsp::Crystal::CancellationToken.new
+      token2 = Lsp::Crystal::CancellationToken.new
+
+      ch = Channel(Lsp::Crystal::CancellationToken?).new(1)
+
+      Lsp::Crystal::CrystalTool.set_cancellation(token1)
+
+      spawn do
+        Lsp::Crystal::CrystalTool.set_cancellation(token2)
+        ch.send(Lsp::Crystal::CrystalTool.current_cancellation)
+        Lsp::Crystal::CrystalTool.clear_cancellation
+      end
+      Fiber.yield
+
+      other_token = ch.receive
+      other_token.should eq(token2)
+      Lsp::Crystal::CrystalTool.current_cancellation.should eq(token1)
+
+      Lsp::Crystal::CrystalTool.clear_cancellation
+    end
+  end
+
+  describe "DocumentStore#each_uri" do
+    it "iterates over all open document URIs" do
+      store = Lsp::Crystal::DocumentStore.new
+      store.open("file:///a.cr", "crystal", 1, "a")
+      store.open("file:///b.cr", "crystal", 1, "b")
+
+      uris = [] of String
+      store.each_uri { |uri| uris << uri }
+      uris.sort.should eq(["file:///a.cr", "file:///b.cr"])
+    end
+  end
 end

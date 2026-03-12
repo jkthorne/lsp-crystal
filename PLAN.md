@@ -78,11 +78,11 @@
 
 **Goal: Completion and navigation that actually understands Crystal.**
 
-- [ ] Context-aware completion — use `crystal tool context` for dot-completion (method/property suggestions on typed objects)
-- [ ] Improved hover — include documentation from comments above definitions
-- [ ] Type-aware rename — use `crystal tool implementations` to find true references, not text matches
-- [ ] Extract method/variable refactoring — code actions for common refactors
-- [ ] Go-to-type-definition — separate from go-to-definition
+- [x] Context-aware completion — use `crystal tool context` for dot-completion (method/property suggestions on typed objects)
+- [x] Improved hover — include documentation from comments above definitions
+- [x] Type-aware rename — use `crystal tool implementations` to find true references, not text matches
+- [x] Extract method/variable refactoring — code actions for common refactors
+- [x] Go-to-type-definition — separate from go-to-definition
 
 ## Phase 5: Polish & Hardening
 

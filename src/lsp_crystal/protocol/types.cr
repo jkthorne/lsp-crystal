@@ -78,7 +78,10 @@ module Lsp::Crystal
 
     property changes : Hash(String, Array(TextEdit))
 
-    def initialize(@changes = Hash(String, Array(TextEdit)).new)
+    @[JSON::Field(key: "documentChanges")]
+    property document_changes : Array(JSON::Any)?
+
+    def initialize(@changes = Hash(String, Array(TextEdit)).new, @document_changes = nil)
     end
   end
 

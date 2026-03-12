@@ -4338,4 +4338,103 @@ describe Lsp::Crystal do
       client.close
     end
   end
+
+  describe "Providers::CodeAction - convert to multiline" do
+    it "converts single-line block to multi-line" do
+      code = "  arr.map { |x| x + 1 }\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 5),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 5)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      multiline = actions.find { |a| a.title == "Convert to multi-line block" }
+      multiline.should_not be_nil
+      edit = multiline.not_nil!.edit.not_nil!
+      text_edits = edit.changes["file:///test.cr"]
+      text_edits[0].new_text.should contain("do |x|")
+      text_edits[0].new_text.should contain("x + 1")
+      text_edits[0].new_text.should contain("end")
+    end
+
+    it "does not offer convert for empty block" do
+      code = "arr.map {}\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 5),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 5)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, nil)
+      multiline = actions.find { |a| a.title == "Convert to multi-line block" }
+      multiline.should be_nil
+    end
+  end
+
+  describe "Providers::CodeAction - generate method stub" do
+    it "generates method stub from diagnostic" do
+      Dir.mkdir_p("/tmp/test_stub")
+      File.write("/tmp/test_stub/bar.cr", "class Bar\nend\n")
+
+      idx = Lsp::Crystal::WorkspaceIndex.new
+      idx.index("/tmp/test_stub")
+
+      code = "bar = Bar.new\nbar.hello\n"
+      doc = Lsp::Crystal::Document.new("file:///tmp/test_stub/foo.cr", "crystal", 1, code)
+      diag = JSON.parse(%{{"message": "undefined method 'hello' for Bar", "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 9}}}})
+
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 1, character: 4),
+        end_pos: Lsp::Crystal::Position.new(line: 1, character: 9)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, [diag], idx)
+      stub_action = actions.find { |a| a.title.includes?("Generate method") }
+      stub_action.should_not be_nil
+      stub_action.not_nil!.title.should eq("Generate method 'hello' on Bar")
+
+      FileUtils.rm_rf("/tmp/test_stub")
+    end
+  end
+
+  describe "Providers::CodeAction - add missing require" do
+    it "adds require for undefined constant" do
+      Dir.mkdir_p("/tmp/test_require")
+      File.write("/tmp/test_require/my_class.cr", "class MyClass\nend\n")
+      File.write("/tmp/test_require/main.cr", "x = MyClass.new\n")
+
+      idx = Lsp::Crystal::WorkspaceIndex.new
+      idx.index("/tmp/test_require")
+
+      doc = Lsp::Crystal::Document.new("file:///tmp/test_require/main.cr", "crystal", 1, "x = MyClass.new\n")
+      diag = JSON.parse(%{{"message": "undefined constant MyClass", "range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 11}}}})
+
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 4),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 11)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, [diag], idx)
+      require_action = actions.find { |a| a.title.includes?("Add require") }
+      require_action.should_not be_nil
+      edit = require_action.not_nil!.edit.not_nil!
+      text_edits = edit.changes["file:///tmp/test_require/main.cr"]
+      text_edits[0].new_text.should contain("require")
+      text_edits[0].new_text.should contain("my_class")
+
+      FileUtils.rm_rf("/tmp/test_require")
+    end
+  end
+
+  describe "Existing code actions still work" do
+    it "still suggests unused variable prefix" do
+      code = "x = 42\n"
+      doc = Lsp::Crystal::Document.new("file:///test.cr", "crystal", 1, code)
+      diag = JSON.parse(%{{"message": "variable 'x' isn't used", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}}})
+      range = Lsp::Crystal::Range.new(
+        start: Lsp::Crystal::Position.new(line: 0, character: 0),
+        end_pos: Lsp::Crystal::Position.new(line: 0, character: 1)
+      )
+      actions = Lsp::Crystal::Providers::CodeAction.run(doc, range, [diag])
+      prefix_action = actions.find { |a| a.title.includes?("underscore") }
+      prefix_action.should_not be_nil
+    end
+  end
 end

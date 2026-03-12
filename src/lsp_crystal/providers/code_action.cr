@@ -7,7 +7,7 @@ module Lsp::Crystal::Providers
     REFACTOR         = "refactor"
     REFACTOR_EXTRACT = "refactor.extract"
 
-    def self.run(document : Document, range : Range, diagnostics : Array(JSON::Any)?) : Array(Lsp::Crystal::CodeAction)
+    def self.run(document : Document, range : Range, diagnostics : Array(JSON::Any)?, workspace_index : WorkspaceIndex? = nil) : Array(Lsp::Crystal::CodeAction)
       actions = [] of Lsp::Crystal::CodeAction
 
       # Diagnostic-driven quick fixes
@@ -16,7 +16,7 @@ module Lsp::Crystal::Providers
           message = diag["message"]?.try(&.as_s) || next
           diag_range = parse_range(diag["range"]?) || next
 
-          if action = suggest_fix(document, message, diag_range)
+          if action = suggest_fix(document, message, diag_range, workspace_index)
             actions << action
           end
         end
@@ -37,10 +37,15 @@ module Lsp::Crystal::Providers
         actions << action
       end
 
+      # Refactoring: convert single-line block to multi-line
+      if action = convert_to_multiline(document, range)
+        actions << action
+      end
+
       actions
     end
 
-    private def self.suggest_fix(document : Document, message : String, diag_range : Range) : Lsp::Crystal::CodeAction?
+    private def self.suggest_fix(document : Document, message : String, diag_range : Range, workspace_index : WorkspaceIndex? = nil) : Lsp::Crystal::CodeAction?
       # Unused variable → prefix with underscore
       if message.includes?("isn't used") || message.includes?("is not used")
         line_text = document.line_at(diag_range.start.line)
@@ -62,6 +67,23 @@ module Lsp::Crystal::Providers
           kind: QUICK_FIX,
           edit: edit
         )
+      end
+
+      # Generate missing method stub
+      if match = message.match(/undefined method '(\w+[?!=]?)'\s*(?:for\s+(\w+(?:::\w+)*))?/)
+        method_name = match[1]
+        type_name = match[2]?
+        if action = generate_method_stub(document, method_name, type_name, workspace_index)
+          return action
+        end
+      end
+
+      # Add missing require for undefined type
+      if match = message.match(/undefined constant (\w+(?:::\w+)*)/)
+        type_name = match[1]
+        if action = add_missing_require(document, type_name, workspace_index)
+          return action
+        end
       end
 
       nil
@@ -264,6 +286,181 @@ module Lsp::Crystal::Providers
       Lsp::Crystal::CodeAction.new(
         title: "Organize requires",
         kind: SOURCE_ORGANIZE_IMPORTS,
+        edit: edit
+      )
+    end
+
+    private def self.generate_method_stub(document : Document, method_name : String, type_name : String?, workspace_index : WorkspaceIndex?) : Lsp::Crystal::CodeAction?
+      return nil unless type_name
+      idx = workspace_index
+      return nil unless idx && idx.indexed?
+
+      # Find the type definition in workspace
+      target_uri : String? = nil
+      target_line : Int32? = nil
+
+      idx.search_type_definition(type_name) do |uri, line_num, _col|
+        target_uri = uri
+        target_line = line_num
+      end
+
+      return nil unless target_uri && target_line
+
+      # Find the end of the type body to insert before it
+      target_path = URI.uri_to_path(target_uri.not_nil!)
+      content = File.read(target_path) rescue nil
+      return nil unless content
+
+      lines = content.not_nil!.lines
+      insert_line = find_type_end(lines, target_line.not_nil!)
+      return nil unless insert_line
+
+      # Determine indentation from the type definition
+      type_line_text = lines[target_line.not_nil!]?
+      indent = "  "
+      if type_line_text
+        base_indent = ""
+        type_line_text.each_char do |c|
+          break unless c == ' ' || c == '\t'
+          base_indent += c.to_s
+        end
+        indent = base_indent + "  "
+      end
+
+      stub = "\n#{indent}def #{method_name}\n#{indent}end\n"
+
+      edit = WorkspaceEdit.new
+      insert_col = lines[insert_line]?.try(&.size) || 0
+      # Insert before the end keyword
+      edits = [TextEdit.new(
+        range: Range.new(
+          start: Position.new(line: insert_line, character: 0),
+          end_pos: Position.new(line: insert_line, character: 0)
+        ),
+        new_text: stub
+      )]
+      edit.changes[target_uri.not_nil!] = edits
+
+      Lsp::Crystal::CodeAction.new(
+        title: "Generate method '#{method_name}' on #{type_name}",
+        kind: QUICK_FIX,
+        edit: edit
+      )
+    end
+
+    private def self.find_type_end(lines : Array(String), type_line : Int32) : Int32?
+      depth = 0
+      (type_line...lines.size).each do |i|
+        stripped = lines[i].strip
+        if stripped =~ /^(?:class|struct|module|enum|def|macro|if|unless|case|while|until|begin|do|for|lib|fun|annotation)\b/
+          depth += 1
+        end
+        if stripped =~ /^end\b/
+          depth -= 1
+          return i if depth <= 0
+        end
+      end
+      nil
+    end
+
+    private def self.add_missing_require(document : Document, type_name : String, workspace_index : WorkspaceIndex?) : Lsp::Crystal::CodeAction?
+      idx = workspace_index
+      return nil unless idx && idx.indexed?
+
+      # Find the file defining this type
+      target_path : String? = nil
+      idx.search_type_definition(type_name) do |uri, _line_num, _col|
+        target_path = URI.uri_to_path(uri)
+      end
+      return nil unless target_path
+
+      doc_path = document.path
+      return nil if doc_path == target_path
+
+      # Compute relative require path
+      doc_dir = File.dirname(doc_path)
+      rel = compute_relative_require(doc_dir, target_path.not_nil!)
+      return nil unless rel
+
+      # Find insertion point: after existing requires or at top
+      lines = document.content.lines
+      insert_line = 0
+      lines.each_with_index do |line, idx|
+        if line =~ /^\s*require\s+"/
+          insert_line = idx + 1
+        end
+      end
+
+      require_text = "require \"#{rel}\"\n"
+
+      edit = WorkspaceEdit.new
+      edits = [TextEdit.new(
+        range: Range.new(
+          start: Position.new(line: insert_line, character: 0),
+          end_pos: Position.new(line: insert_line, character: 0)
+        ),
+        new_text: require_text
+      )]
+      edit.changes[document.uri] = edits
+
+      Lsp::Crystal::CodeAction.new(
+        title: "Add require for '#{type_name}'",
+        kind: QUICK_FIX,
+        edit: edit
+      )
+    end
+
+    private def self.compute_relative_require(from_dir : String, target_path : String) : String?
+      rel = Path.new(target_path).relative_to(Path.new(from_dir)).to_s
+      return nil if rel.empty?
+
+      # Remove .cr extension
+      rel = rel.chomp(".cr")
+
+      # Ensure it starts with ./
+      rel = "./#{rel}" unless rel.starts_with?("../")
+      rel
+    end
+
+    private def self.convert_to_multiline(document : Document, range : Range) : Lsp::Crystal::CodeAction?
+      # Cursor must be on a single line
+      return nil unless range.start.line == range.end_pos.line
+
+      line_text = document.line_at(range.start.line)
+      return nil unless line_text
+
+      # Match single-line block: expr { |args| body } or expr {body}
+      match = line_text.match(/^(\s*)(.*?)\s*\{\s*(\|[^|]*\|)?\s*(.*?)\s*\}\s*$/)
+      return nil unless match
+
+      indent = match[1]
+      prefix = match[2]
+      block_args = match[3]?
+      body = match[4]
+
+      # Skip empty blocks or hash literals
+      return nil if body.nil? || body.empty?
+      return nil if prefix.empty? # likely a hash literal
+
+      # Build multi-line version
+      args_part = block_args ? " #{block_args}" : ""
+      new_text = "#{indent}#{prefix} do#{args_part}\n#{indent}  #{body}\n#{indent}end"
+
+      edits = [TextEdit.new(
+        range: Range.new(
+          start: Position.new(line: range.start.line, character: 0),
+          end_pos: Position.new(line: range.start.line, character: line_text.size)
+        ),
+        new_text: new_text
+      )]
+
+      changes = Hash(String, Array(TextEdit)).new
+      changes[document.uri] = edits
+      edit = WorkspaceEdit.new(changes)
+
+      Lsp::Crystal::CodeAction.new(
+        title: "Convert to multi-line block",
+        kind: REFACTOR,
         edit: edit
       )
     end

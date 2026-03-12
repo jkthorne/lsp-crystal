@@ -84,11 +84,11 @@ These are known architectural constraints that limit quality but are not blocker
 
 Potential improvements if the project continues beyond 1.0:
 
-### Medium Impact
-- **Type hierarchy** — `typeHierarchy/supertypes` and `typeHierarchy/subtypes` for inheritance browsing.
-- **Linked editing ranges** — Simultaneous editing of matching pairs (e.g. block/end).
-- **Workspace edits** — Multi-file refactoring support beyond rename.
-- **Diagnostic severity configuration** — Let users suppress specific warning categories.
+### Medium Impact (Phase 9 — Complete)
+- ~~**Type hierarchy** — `typeHierarchy/supertypes` and `typeHierarchy/subtypes` for inheritance browsing.~~
+- ~~**Linked editing ranges** — Simultaneous editing of matching pairs (e.g. block/end).~~
+- ~~**Workspace edits** — Multi-file refactoring support beyond rename.~~
+- ~~**Diagnostic severity configuration** — Let users suppress specific warning categories.~~
 
 ### Low Impact
 - **Range formatting** — Format selected regions instead of whole file.

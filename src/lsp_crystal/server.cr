@@ -11,6 +11,8 @@ module Lsp::Crystal
     getter workspace_root : String?
     getter main_file : String?
     getter workspace_index : WorkspaceIndex
+    getter configuration : Configuration
+    getter workspace_folders : Array(String)
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
@@ -19,6 +21,8 @@ module Lsp::Crystal
     def initialize(@transport : Transport::Stdio = Transport::Stdio.new)
       @document_store = DocumentStore.new
       @workspace_index = WorkspaceIndex.new
+      @configuration = Configuration.new
+      @workspace_folders = [] of String
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new
@@ -91,6 +95,17 @@ module Lsp::Crystal
         @workspace_index.index(root)
         send_progress_end("indexing")
       end
+    end
+
+    def add_workspace_folder(path : String) : Nil
+      @workspace_folders << path unless @workspace_folders.includes?(path)
+      # Re-index to include the new folder
+      spawn { @workspace_index.index_folder(path) }
+    end
+
+    def remove_workspace_folder(path : String) : Nil
+      @workspace_folders.delete(path)
+      @workspace_index.remove_folder(path)
     end
 
     def send_progress_begin(token : String, title : String, message : String? = nil) : Nil

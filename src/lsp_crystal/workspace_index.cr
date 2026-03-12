@@ -39,6 +39,28 @@ module Lsp::Crystal
       Log.info { "Indexed #{entries.size} files in workspace" }
     end
 
+    # Index an additional folder (for multi-root workspaces)
+    def index_folder(folder : String) : Nil
+      new_entries = Hash(String, FileEntry).new
+      Dir.glob(File.join(folder, "**", "*.cr")) do |file_path|
+        next if skip_path?(file_path, folder)
+        if entry = build_entry(file_path)
+          new_entries[file_path] = entry
+        end
+      end
+      @mutex.synchronize do
+        new_entries.each { |k, v| @files[k] = v }
+      end
+      Log.info { "Indexed #{new_entries.size} files from #{folder}" }
+    end
+
+    # Remove all files belonging to a folder
+    def remove_folder(folder : String) : Nil
+      @mutex.synchronize do
+        @files.reject! { |path, _| path.starts_with?(folder) }
+      end
+    end
+
     # Invalidate a file from disk (re-read or remove)
     def invalidate(path : String) : Nil
       @mutex.synchronize do

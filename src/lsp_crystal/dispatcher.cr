@@ -2,6 +2,18 @@ module Lsp::Crystal
   class Dispatcher
     alias Handler = Proc(Server, JSONRPC::Message, String?)
 
+    ASYNC_METHODS = Set{
+      "textDocument/definition",
+      "textDocument/typeDefinition",
+      "textDocument/implementation",
+      "textDocument/hover",
+      "textDocument/formatting",
+      "textDocument/rename",
+      "textDocument/prepareCallHierarchy",
+      "callHierarchy/incomingCalls",
+      "callHierarchy/outgoingCalls",
+    }
+
     def initialize(@server : Server)
       @handlers = Hash(String, Handler).new
       register_handlers
@@ -11,7 +23,23 @@ module Lsp::Crystal
       method = message.method
       return nil unless method
 
+      # Handle cancel request synchronously
+      if method == "$/cancelRequest"
+        handle_cancel_request(message)
+        return nil
+      end
+
       request_id = message.id
+
+      if request_id && ASYNC_METHODS.includes?(method)
+        dispatch_async(message, method, request_id.not_nil!)
+        return nil
+      end
+
+      dispatch_sync(message, method, request_id)
+    end
+
+    private def dispatch_sync(message : JSONRPC::Message, method : String, request_id : JSONRPC::RequestId?) : String?
       start_time = Time.instant
 
       if handler = @handlers[method]?
@@ -31,6 +59,61 @@ module Lsp::Crystal
         Log.debug &.emit("Unhandled method", method: method)
         if id = request_id
           JSONRPC::Response.error(id, JSONRPC::ErrorCode::MethodNotFound, "Method not found: #{method}")
+        end
+      end
+    end
+
+    private def dispatch_async(message : JSONRPC::Message, method : String, id : JSONRPC::RequestId) : Nil
+      handler = @handlers[method]?
+      unless handler
+        response = JSONRPC::Response.error(id, JSONRPC::ErrorCode::MethodNotFound, "Method not found: #{method}")
+        @server.transport.write_message(response)
+        return
+      end
+
+      token = CancellationToken.new
+      tracker = @server.request_tracker
+
+      fiber = spawn do
+        start_time = Time.instant
+        begin
+          CrystalTool.set_cancellation(token)
+          result = handler.call(@server, message)
+
+          response_str = if token.cancelled?
+                           JSONRPC::Response.error(id, JSONRPC::ErrorCode::RequestCancelled, "Request cancelled")
+                         else
+                           result
+                         end
+
+          elapsed = Time.instant - start_time
+          Log.info &.emit("Async request handled", method: method, request_id: id.to_s, duration_ms: elapsed.total_milliseconds.to_s)
+
+          if resp = response_str
+            @server.transport.write_message(resp)
+          end
+        rescue ex
+          elapsed = Time.instant - start_time
+          Log.error &.emit("Async handler error", method: method, request_id: id.to_s, duration_ms: elapsed.total_milliseconds.to_s, error: ex.message || "unknown")
+          response = JSONRPC::Response.error(id, JSONRPC::ErrorCode::InternalError, ex.message || "Internal error")
+          @server.transport.write_message(response)
+        ensure
+          CrystalTool.clear_cancellation
+          tracker.complete(id)
+        end
+      end
+
+      tracker.track(id, method, token, fiber)
+    end
+
+    private def handle_cancel_request(message : JSONRPC::Message) : Nil
+      if params = message.params
+        if cancel_id = params["id"]?
+          id = cancel_id.as_i64? || cancel_id.as_s?
+          if id
+            cancelled = @server.request_tracker.cancel(id)
+            Log.info &.emit("Cancel request", request_id: id.to_s, found: cancelled.to_s)
+          end
         end
       end
     end
@@ -87,6 +170,9 @@ module Lsp::Crystal
       # Configuration
       @handlers["workspace/didChangeConfiguration"] = Handler.new { |server, msg| Handlers::Configuration.did_change(server, msg) }
       @handlers["workspace/didChangeWorkspaceFolders"] = Handler.new { |server, msg| Handlers::WorkspaceFolders.did_change(server, msg) }
+
+      # File watching
+      @handlers["workspace/didChangeWatchedFiles"] = Handler.new { |server, msg| Handlers::DidChangeWatchedFiles.handle(server, msg) }
     end
   end
 end

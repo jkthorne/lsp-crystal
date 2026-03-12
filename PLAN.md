@@ -4,8 +4,8 @@
 
 A full-featured Language Server Protocol implementation for Crystal, written in pure Crystal with zero external dependencies. Provides intelligent code assistance — navigation, completion, refactoring, diagnostics, and more — by combining a fast AST subsystem with `crystal tool` compiler integration.
 
-- **8,686 LOC** source across 80 files, **5,623 LOC** specs, **389 passing tests**
-- 23 providers, 28 handlers, 5 AST visitors, 12 infrastructure modules
+- **8,837 LOC** source across 82 files, **5,826 LOC** specs, **400 passing tests**
+- 23 providers, 30 handlers, 5 AST visitors, 12 infrastructure modules
 - Crystal >= 1.19.1, stdlib only (includes `compiler/crystal/syntax`)
 - MIT licensed, CI on Crystal latest + nightly
 
@@ -185,10 +185,10 @@ Per-document AST cache keyed by URI + version, invalidated on `didChange`/`didCl
 
 | Metric | Value |
 |--------|-------|
-| Source files | 80 |
-| Source LOC | 8,686 |
-| Spec LOC | 5,623 |
-| Tests | 389 passing, 0 failing |
+| Source files | 82 |
+| Source LOC | 8,837 |
+| Spec LOC | 5,826 |
+| Tests | 400 passing, 0 failing |
 | External deps | 0 |
 | Crystal version | >= 1.19.1 |
 | CI | GitHub Actions (latest + nightly) |

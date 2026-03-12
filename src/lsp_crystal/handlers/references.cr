@@ -13,7 +13,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, [] of Location)
       end
 
-      locations = Providers::References.run(doc, line, character, server.workspace_root, include_declaration, server.workspace_index, server.ast_cache)
+      locations = Providers::References.run(doc, line, character, server.workspace_root, include_declaration, server.workspace_index, server.ast_cache, server.ast_index)
       JSONRPC::Response.success(id, locations)
     end
   end

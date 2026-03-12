@@ -13,7 +13,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, nil)
       end
 
-      edit = Providers::Rename.run(doc, line, character, new_name, server.workspace_root, server.workspace_index, server.ast_cache)
+      edit = Providers::Rename.run(doc, line, character, new_name, server.workspace_root, server.workspace_index, server.ast_cache, server.ast_index)
       JSONRPC::Response.success(id, edit)
     end
 

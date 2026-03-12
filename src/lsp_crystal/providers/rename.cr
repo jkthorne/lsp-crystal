@@ -27,7 +27,7 @@ module Lsp::Crystal::Providers
     end
 
     # Perform rename across workspace — uses crystal tool implementations for type-aware rename
-    def self.run(document : Document, line : Int32, character : Int32, new_name : String, workspace_root : String?, workspace_index : WorkspaceIndex? = nil, ast_cache : AST::Cache? = nil) : WorkspaceEdit
+    def self.run(document : Document, line : Int32, character : Int32, new_name : String, workspace_root : String?, workspace_index : WorkspaceIndex? = nil, ast_cache : AST::Cache? = nil, ast_index : AST::Index? = nil) : WorkspaceEdit
       # Try type-aware rename first using crystal tool implementations
       impl_locations = find_implementation_references(document, line, character)
 
@@ -36,7 +36,7 @@ module Lsp::Crystal::Providers
                     impl_locations
                   else
                     # Fall back to text-based references (AST-aware for current doc)
-                    References.run(document, line, character, workspace_root, include_declaration: true, workspace_index: workspace_index, ast_cache: ast_cache)
+                    References.run(document, line, character, workspace_root, include_declaration: true, workspace_index: workspace_index, ast_cache: ast_cache, ast_index: ast_index)
                   end
 
       changes = Hash(String, Array(TextEdit)).new

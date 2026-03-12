@@ -13,6 +13,20 @@ module Lsp::Crystal::Providers
       end
     end
 
+    # Use the AST index for rich symbol search with hierarchy info
+    def self.run_ast_indexed(ast_index : AST::Index, query : String) : Array(WorkspaceSymbolInfo)
+      results = [] of WorkspaceSymbolInfo
+      ast_index.search_symbols(query, MAX_RESULTS).each do |uri, sym|
+        display_name = sym.name
+        results << WorkspaceSymbolInfo.new(
+          name: display_name,
+          kind: sym.kind,
+          location: Location.new(uri: uri, range: sym.selection_range)
+        )
+      end
+      results
+    end
+
     # Use the workspace index for fast symbol search
     def self.run_indexed(index : WorkspaceIndex, query : String) : Array(WorkspaceSymbolInfo)
       index.search_symbols(query, MAX_RESULTS)

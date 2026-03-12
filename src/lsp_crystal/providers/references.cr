@@ -3,7 +3,7 @@ module Lsp::Crystal::Providers
     MAX_RESULTS = 500
 
     # Find all references to the word at the given position across the workspace
-    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String?, include_declaration : Bool = true, workspace_index : WorkspaceIndex? = nil, ast_cache : AST::Cache? = nil) : Array(Location)
+    def self.run(document : Document, line : Int32, character : Int32, workspace_root : String?, include_declaration : Bool = true, workspace_index : WorkspaceIndex? = nil, ast_cache : AST::Cache? = nil, ast_index : AST::Index? = nil) : Array(Location)
       word = extract_word(document, line, character)
       return [] of Location if word.empty?
 
@@ -20,27 +20,45 @@ module Lsp::Crystal::Providers
       end
       find_in_content(document.content, document.uri, pattern, results) unless ast_found
 
-      # Use index if available, otherwise fall back to file scanning
-      if workspace_index && workspace_index.indexed?
-        current_path = URI.uri_to_path(document.uri)
-        indexed_refs = workspace_index.search_references(pattern, exclude_path: current_path, max_results: MAX_RESULTS - results.size)
-        results.concat(indexed_refs)
-      elsif root = workspace_root
-        current_path = URI.uri_to_path(document.uri)
-        Dir.glob(File.join(root, "**", "*.cr")) do |file_path|
-          break if results.size >= MAX_RESULTS
-          next if file_path.includes?("/lib/") || file_path.includes?("/.crystal/")
-          next if file_path == current_path # Already searched
-          next if File.symlink?(file_path) && !URI.path_within_workspace?(file_path, root)
-
-          content = begin
-            File.read(file_path)
-          rescue
-            next
+      # Cross-file references: prefer AST index, fall back to workspace index, then file scan
+      cross_file_found = false
+      if idx = ast_index
+        if idx.indexed?
+          refs = idx.find_references(word)
+          cross_refs = refs.select { |r| r.uri != document.uri }
+          unless cross_refs.empty?
+            cross_refs.each do |ref|
+              break if results.size >= MAX_RESULTS
+              next if !include_declaration && ref.kind.definition?
+              results << Location.new(uri: ref.uri, range: ref.range)
+            end
+            cross_file_found = true
           end
+        end
+      end
 
-          uri = URI.path_to_uri(file_path)
-          find_in_content(content, uri, pattern, results)
+      unless cross_file_found
+        if workspace_index && workspace_index.indexed?
+          current_path = URI.uri_to_path(document.uri)
+          indexed_refs = workspace_index.search_references(pattern, exclude_path: current_path, max_results: MAX_RESULTS - results.size)
+          results.concat(indexed_refs)
+        elsif root = workspace_root
+          current_path = URI.uri_to_path(document.uri)
+          Dir.glob(File.join(root, "**", "*.cr")) do |file_path|
+            break if results.size >= MAX_RESULTS
+            next if file_path.includes?("/lib/") || file_path.includes?("/.crystal/")
+            next if file_path == current_path # Already searched
+            next if File.symlink?(file_path) && !URI.path_within_workspace?(file_path, root)
+
+            content = begin
+              File.read(file_path)
+            rescue
+              next
+            end
+
+            uri = URI.path_to_uri(file_path)
+            find_in_content(content, uri, pattern, results)
+          end
         end
       end
 

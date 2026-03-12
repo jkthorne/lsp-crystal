@@ -12,7 +12,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, [] of Location)
       end
 
-      locations = Providers::Definition.run(doc, line, character)
+      locations = Providers::Definition.run(doc, line, character, server.ast_index)
       JSONRPC::Response.success(id, locations)
     end
   end

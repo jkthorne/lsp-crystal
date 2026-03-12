@@ -10,7 +10,9 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, [] of Providers::WorkspaceSymbol::WorkspaceSymbolInfo)
       end
 
-      symbols = if server.workspace_index.indexed?
+      symbols = if server.ast_index.indexed?
+                  Providers::WorkspaceSymbol.run_ast_indexed(server.ast_index, query)
+                elsif server.workspace_index.indexed?
                   Providers::WorkspaceSymbol.run_indexed(server.workspace_index, query)
                 else
                   Providers::WorkspaceSymbol.run(root, query)

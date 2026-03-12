@@ -33,9 +33,10 @@ module Lsp::Crystal::Handlers
       # Cancel any pending idle precompile
       server.cancel_idle_precompile
 
-      # Update workspace index with latest content
+      # Update workspace index and AST index with latest content
       if doc
         server.workspace_index.invalidate_content(doc.path, doc.content)
+        spawn { server.ast_index.index_file(uri, doc.content) }
 
         # Tier 1: Instant syntax diagnostics (ms) — published with diffing
         syntax_diags = Providers::Diagnostics.check_syntax(doc.content, doc.path)
@@ -60,10 +61,13 @@ module Lsp::Crystal::Handlers
           server.workspace_index.invalidate_content(doc.path, text)
         end
         server.require_graph.update_file(path, text)
+        spawn { server.ast_index.index_file(uri, text) }
       else
         # Re-read from disk on save
         server.workspace_index.invalidate(path)
         server.require_graph.update_file(path)
+        content = File.read(path) rescue nil
+        spawn { server.ast_index.index_file(uri, content) } if content
       end
 
       server.schedule_diagnostics(uri)
@@ -81,6 +85,12 @@ module Lsp::Crystal::Handlers
       # Re-index from disk when document is closed
       path = URI.uri_to_path(uri)
       server.workspace_index.invalidate(path)
+      content = File.read(path) rescue nil
+      if content
+        spawn { server.ast_index.index_file(uri, content) }
+      else
+        server.ast_index.remove_file(uri)
+      end
 
       # Clear diagnostics for closed file
       server.clear_published_diagnostics(uri)

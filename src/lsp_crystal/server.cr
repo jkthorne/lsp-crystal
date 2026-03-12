@@ -15,6 +15,7 @@ module Lsp::Crystal
     getter ast_cache : AST::Cache
     getter require_graph : RequireGraph
     getter semantic_token_cache : Providers::SemanticTokens::TokenCache
+    getter ast_index : AST::Index
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
@@ -39,6 +40,7 @@ module Lsp::Crystal
       @ast_cache = AST::Cache.new
       @require_graph = RequireGraph.new
       @semantic_token_cache = Providers::SemanticTokens::TokenCache.new
+      @ast_index = AST::Index.new
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new
@@ -200,6 +202,12 @@ module Lsp::Crystal
         @workspace_index.index(root)
         @require_graph.build(root)
         send_progress_end("indexing")
+        # AST index runs after basic indexing completes
+        spawn do
+          send_progress_begin("ast-indexing", "Building AST index...")
+          @ast_index.index_workspace(root)
+          send_progress_end("ast-indexing")
+        end
       end
     end
 

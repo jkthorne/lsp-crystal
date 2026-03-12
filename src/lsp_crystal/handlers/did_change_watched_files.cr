@@ -23,11 +23,14 @@ module Lsp::Crystal::Handlers
           server.workspace_index.invalidate(path)
           server.invalidate_diagnostics_cache(uri)
           server.require_graph.update_file(path)
+          content = File.read(path) rescue nil
+          spawn { server.ast_index.index_file(uri, content) } if content
           changed_paths << path
         when FILE_EVENT_DELETED
           server.workspace_index.invalidate(path)
           server.invalidate_diagnostics_cache(uri)
           server.require_graph.remove_file(path)
+          server.ast_index.remove_file(uri)
           # Clear published diagnostics for deleted files
           server.publish_diagnostics_if_changed(uri, [] of Providers::Diagnostics::Diagnostic)
           changed_paths << path

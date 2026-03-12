@@ -20,6 +20,7 @@ module Lsp::Crystal::Providers
           break if results.size >= MAX_RESULTS
           next if file_path.includes?("/lib/") || file_path.includes?("/.crystal/")
           next if file_path == current_path # Already searched
+          next if File.symlink?(file_path) && !URI.path_within_workspace?(file_path, root)
 
           content = begin
             File.read(file_path)

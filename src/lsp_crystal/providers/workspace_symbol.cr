@@ -22,6 +22,7 @@ module Lsp::Crystal::Providers
 
         # Skip lib/ and .crystal/ directories
         next if file_path.includes?("/lib/") || file_path.includes?("/.crystal/")
+        next if File.symlink?(file_path) && !URI.path_within_workspace?(file_path, workspace_root)
 
         content = begin
           File.read(file_path)

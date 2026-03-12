@@ -2,6 +2,9 @@ module Lsp::Crystal
   class CrystalTool
     DEFAULT_TIMEOUT = 30.seconds
 
+    @@fiber_tokens = Hash(Fiber, CancellationToken).new
+    @@fiber_tokens_mutex = Mutex.new
+
     struct ToolResult
       property success : Bool
       property stdout : String
@@ -11,9 +14,26 @@ module Lsp::Crystal
       end
     end
 
+    def self.set_cancellation(token : CancellationToken) : Nil
+      @@fiber_tokens_mutex.synchronize { @@fiber_tokens[Fiber.current] = token }
+    end
+
+    def self.clear_cancellation : Nil
+      @@fiber_tokens_mutex.synchronize { @@fiber_tokens.delete(Fiber.current) }
+    end
+
+    def self.current_cancellation : CancellationToken?
+      @@fiber_tokens_mutex.synchronize { @@fiber_tokens[Fiber.current]? }
+    end
+
     def self.run(args : Array(String), input : String? = nil, timeout : Time::Span = DEFAULT_TIMEOUT) : ToolResult
       stdout_io = IO::Memory.new
       stderr_io = IO::Memory.new
+      cancel_token = current_cancellation
+
+      if cancel_token && cancel_token.cancelled?
+        return ToolResult.new(false, "", "Request was cancelled")
+      end
 
       begin
         process = Process.new(
@@ -30,14 +50,32 @@ module Lsp::Crystal
         end
 
         timed_out = false
+        cancelled = false
         done_channel = Channel(Nil).new(1)
+
+        spawn do
+          loop do
+            sleep 200.milliseconds
+            if done_channel.closed?
+              break
+            end
+            if cancel_token && cancel_token.cancelled?
+              cancelled = true
+              process.terminate rescue nil
+              spawn do
+                sleep 2.seconds
+                process.signal(Signal::KILL) rescue nil
+              end
+              break
+            end
+          end
+        end
 
         spawn do
           sleep timeout
           unless done_channel.closed?
             timed_out = true
             process.terminate rescue nil
-            # Give it a moment to exit gracefully, then force kill
             spawn do
               sleep 2.seconds
               process.signal(Signal::KILL) rescue nil
@@ -48,7 +86,9 @@ module Lsp::Crystal
         status = process.wait
         done_channel.close
 
-        if timed_out
+        if cancelled
+          ToolResult.new(false, "", "Request was cancelled")
+        elsif timed_out
           ToolResult.new(false, "", "Crystal tool timed out after #{timeout.total_seconds.to_i}s")
         else
           ToolResult.new(status.success?, stdout_io.to_s, stderr_io.to_s)

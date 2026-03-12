@@ -10,7 +10,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, [] of Providers::CodeLens::CodeLensItem)
       end
 
-      lenses = Providers::CodeLens.run(doc, server.workspace_index)
+      lenses = Providers::CodeLens.run(doc, uri)
       JSONRPC::Response.success(id, lenses)
     end
   end

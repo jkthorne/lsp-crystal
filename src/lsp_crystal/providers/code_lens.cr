@@ -5,8 +5,9 @@ module Lsp::Crystal::Providers
 
       property range : Range
       property command : CodeLensCommand?
+      property data : JSON::Any?
 
-      def initialize(@range, @command = nil)
+      def initialize(@range, @command = nil, @data = nil)
       end
     end
 
@@ -21,44 +22,44 @@ module Lsp::Crystal::Providers
       end
     end
 
-    # Returns code lenses for methods and classes showing reference counts
-    def self.run(document : Document, workspace_index : WorkspaceIndex?) : Array(CodeLensItem)
+    # Returns unresolved code lenses (no command, just data for lazy resolution)
+    def self.run(document : Document, uri : String) : Array(CodeLensItem)
       lenses = [] of CodeLensItem
 
       document.content.each_line.with_index do |line, line_num|
         # Match method definitions
         if match = line.match(/^\s*def\s+(self\.)?(\w+[?!=]?)/)
           name = match[1]? == "self." ? "self.#{match[2]}" : match[2]
-          count = count_references(name, document, workspace_index)
           col = line.index(name) || 0
-          add_lens(lenses, line_num, col, name, count)
+          add_unresolved_lens(lenses, line_num, col, name, uri)
         end
 
         # Match class/module/struct/enum definitions
         if match = line.match(/^\s*(class|module|struct|enum)\s+(\w+(?:::\w+)*)/)
           name = match[2]
-          count = count_references(name, document, workspace_index)
           col = line.index(name) || 0
-          add_lens(lenses, line_num, col, name, count)
+          add_unresolved_lens(lenses, line_num, col, name, uri)
         end
 
         # Match constants
         if match = line.match(/^\s*([A-Z][A-Z0-9_]+)\s*=/)
           name = match[1]
-          count = count_references(name, document, workspace_index)
           col = line.index(name) || 0
-          add_lens(lenses, line_num, col, name, count)
+          add_unresolved_lens(lenses, line_num, col, name, uri)
         end
       end
 
       lenses
     end
 
-    private def self.add_lens(lenses : Array(CodeLensItem), line_num : Int32, col : Int32, name : String, count : Int32) : Nil
-      range = Range.new(
-        start: Position.new(line: line_num, character: col),
-        end_pos: Position.new(line: line_num, character: col + name.size)
-      )
+    # Resolve a single code lens by computing its reference count
+    def self.resolve(item : CodeLensItem, document : Document, workspace_index : WorkspaceIndex?) : CodeLensItem
+      data = item.data
+      name = data.try { |d| d["name"]?.try(&.as_s) } || "unknown"
+
+      count = count_references(name, document, workspace_index)
+      line_num = item.range.start.line
+      col = item.range.start.character
 
       title = count == 1 ? "1 reference" : "#{count} references"
       command = CodeLensCommand.new(
@@ -67,7 +68,21 @@ module Lsp::Crystal::Providers
         arguments: [JSON::Any.new(line_num.to_i64), JSON::Any.new(col.to_i64)]
       )
 
-      lenses << CodeLensItem.new(range: range, command: command)
+      CodeLensItem.new(range: item.range, command: command, data: item.data)
+    end
+
+    private def self.add_unresolved_lens(lenses : Array(CodeLensItem), line_num : Int32, col : Int32, name : String, uri : String) : Nil
+      range = Range.new(
+        start: Position.new(line: line_num, character: col),
+        end_pos: Position.new(line: line_num, character: col + name.size)
+      )
+
+      data = JSON::Any.new({
+        "name" => JSON::Any.new(name),
+        "uri"  => JSON::Any.new(uri),
+      })
+
+      lenses << CodeLensItem.new(range: range, data: data)
     end
 
     private def self.count_references(name : String, document : Document, workspace_index : WorkspaceIndex?) : Int32

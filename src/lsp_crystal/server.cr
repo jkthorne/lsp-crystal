@@ -2,8 +2,6 @@ require "yaml"
 
 module Lsp::Crystal
   class Server
-    DIAGNOSTICS_DEBOUNCE = 500.milliseconds
-
     property? initialized : Bool = false
     property? shutdown_requested : Bool = false
     getter transport : Transport::Stdio
@@ -13,19 +11,28 @@ module Lsp::Crystal
     getter workspace_index : WorkspaceIndex
     getter configuration : Configuration
     getter workspace_folders : Array(String)
+    getter request_tracker : RequestTracker
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
     @pending_mutex : Mutex
+    @diagnostics_hashes : Hash(String, UInt64)
+    @diagnostics_hashes_mutex : Mutex
+    @active_uri : String?
+    @next_request_id : Atomic(Int64)
 
     def initialize(@transport : Transport::Stdio = Transport::Stdio.new)
       @document_store = DocumentStore.new
       @workspace_index = WorkspaceIndex.new
       @configuration = Configuration.new
       @workspace_folders = [] of String
+      @request_tracker = RequestTracker.new
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new
+      @diagnostics_hashes = Hash(String, UInt64).new
+      @diagnostics_hashes_mutex = Mutex.new
+      @next_request_id = Atomic(Int64).new(1_i64)
       @shutdown_channel = Channel(Nil).new(1)
       spawn_diagnostics_worker
       install_signal_handlers
@@ -62,6 +69,7 @@ module Lsp::Crystal
 
     def graceful_shutdown : Nil
       Log.info { "Shutting down gracefully..." }
+      @request_tracker.cancel_all
       @diagnostics_channel.close rescue nil
       Log.info { "Server stopped" }
     end
@@ -71,11 +79,35 @@ module Lsp::Crystal
       @transport.write_message(json)
     end
 
+    def send_request(method : String, params) : Int64
+      id = @next_request_id.add(1) - 1
+      json = JSON.build do |j|
+        j.object do
+          j.field "jsonrpc", "2.0"
+          j.field "id", id
+          j.field "method", method
+          j.field "params" do
+            params.to_json(j)
+          end
+        end
+      end
+      @transport.write_message(json)
+      id
+    end
+
     def schedule_diagnostics(uri : String) : Nil
+      debounce = @configuration.diagnostics_debounce
+      @active_uri = uri
       @pending_mutex.synchronize do
-        @pending_diagnostics[uri] = Time.instant + DIAGNOSTICS_DEBOUNCE
+        @pending_diagnostics[uri] = Time.instant + debounce
       end
       @diagnostics_channel.send(uri) rescue nil
+    end
+
+    def invalidate_diagnostics_cache(uri : String) : Nil
+      @diagnostics_hashes_mutex.synchronize do
+        @diagnostics_hashes.delete(uri)
+      end
     end
 
     def detect_project(root_uri : String) : Nil
@@ -160,7 +192,7 @@ module Lsp::Crystal
         loop do
           uri = @diagnostics_channel.receive
           # Debounce: wait then check if this is still the latest request
-          sleep DIAGNOSTICS_DEBOUNCE
+          sleep @configuration.diagnostics_debounce
           # Drain any duplicate URIs from channel
           uris_to_run = Set(String).new
           uris_to_run << uri
@@ -173,8 +205,14 @@ module Lsp::Crystal
             end
           end
 
+          # Sort so active URI runs first
+          sorted_uris = uris_to_run.to_a
+          if active = @active_uri
+            sorted_uris.sort_by! { |u| u == active ? 0 : 1 }
+          end
+
           # Only run diagnostics for URIs whose debounce has elapsed
-          uris_to_run.each do |pending_uri|
+          sorted_uris.each do |pending_uri|
             scheduled_at = @pending_mutex.synchronize { @pending_diagnostics[pending_uri]? }
             next unless scheduled_at
             next if Time.instant < scheduled_at
@@ -192,6 +230,14 @@ module Lsp::Crystal
       doc = @document_store.get(uri)
       return unless doc
 
+      # Content hash caching: skip if content unchanged since last run
+      content_hash = doc.content.hash.to_u64
+      cached_hash = @diagnostics_hashes_mutex.synchronize { @diagnostics_hashes[uri]? }
+      if cached_hash == content_hash
+        Log.debug { "Skipping diagnostics for #{uri} (content unchanged)" }
+        return
+      end
+
       file_path = doc.path
       Log.debug { "Running diagnostics for #{file_path}" }
 
@@ -200,6 +246,9 @@ module Lsp::Crystal
                     else
                       Providers::Diagnostics.run_content(doc.content, file_path)
                     end
+
+      # Store hash after successful run
+      @diagnostics_hashes_mutex.synchronize { @diagnostics_hashes[uri] = content_hash }
 
       send_notification("textDocument/publishDiagnostics", {
         uri:         uri,

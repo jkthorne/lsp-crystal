@@ -123,6 +123,12 @@ module Lsp::Crystal
       end
     end
 
+    def each_uri(&block : String ->) : Nil
+      @mutex.synchronize do
+        @documents.each_key { |uri| block.call(uri) }
+      end
+    end
+
     def size : Int32
       @mutex.synchronize { @documents.size }
     end

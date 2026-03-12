@@ -10,7 +10,7 @@ module Lsp::Crystal::Handlers
         return JSONRPC::Response.success(id, {data: [] of Int32})
       end
 
-      data = Providers::SemanticTokens.run(doc)
+      data = Providers::SemanticTokens.run(doc, server.ast_cache)
       JSONRPC::Response.success(id, {data: data})
     end
   end

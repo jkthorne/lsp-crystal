@@ -53,7 +53,18 @@ module Lsp::Crystal::Providers
     MODIFIERS = Set{"abstract", "private", "protected"}
 
     # Returns encoded token data for the full document
-    def self.run(document : Document) : Array(Int32)
+    # Tries lexer-based tokenization first, falls back to regex
+    def self.run(document : Document, ast_cache : AST::Cache? = nil) : Array(Int32)
+      if ast_cache
+        if tokens = AST::LexerTokenizer.tokenize(document.content)
+          return encode(tokens)
+        end
+      end
+      run_regex(document)
+    end
+
+    # Regex-based tokenization (fallback)
+    def self.run_regex(document : Document) : Array(Int32)
       tokens = [] of {Int32, Int32, Int32, Int32, Int32} # line, col, len, type, modifiers
 
       document.content.each_line.with_index do |line, line_num|

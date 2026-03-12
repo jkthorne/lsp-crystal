@@ -3698,4 +3698,394 @@ describe Lsp::Crystal do
       result.items.should_not be_empty
     end
   end
+
+  # Phase 1: Diagnostic Diffing
+  describe "Diagnostic Diffing" do
+    it "publishes diagnostics on first call" do
+      server = TestClient.new.server
+      diags = [Lsp::Crystal::Providers::Diagnostics::Diagnostic.new(
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 0, character: 0),
+          end_pos: Lsp::Crystal::Position.new(line: 0, character: 5)
+        ),
+        severity: 1,
+        source: "crystal",
+        message: "test error"
+      )]
+      # Should not raise and should publish (no cached version)
+      server.publish_diagnostics_if_changed("file:///test.cr", diags)
+    end
+
+    it "skips publishing identical diagnostics" do
+      input_read, input_write = IO.pipe
+      output_read, output_write = IO.pipe
+      transport = Lsp::Crystal::Transport::Stdio.new(input: input_read, output: output_write)
+      server = Lsp::Crystal::Server.new(transport)
+
+      diags = [Lsp::Crystal::Providers::Diagnostics::Diagnostic.new(
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 1, character: 2),
+          end_pos: Lsp::Crystal::Position.new(line: 1, character: 5)
+        ),
+        severity: 1,
+        source: "crystal",
+        message: "undefined variable"
+      )]
+
+      # First publish — should write to output
+      server.publish_diagnostics_if_changed("file:///test.cr", diags)
+      output_write.flush
+
+      # Second publish with identical diagnostics — should skip
+      server.publish_diagnostics_if_changed("file:///test.cr", diags)
+      output_write.flush
+
+      # Read first notification
+      output_read.read_line("\r\n")  # Content-Length header
+      output_read.read_line("\r\n")  # blank line
+
+      # Check if there's a second message (there shouldn't be)
+      ch = Channel(Bool).new(1)
+      spawn do
+        output_read.read_line("\r\n") rescue nil
+        ch.send(true)
+      end
+
+      select
+      when ch.receive
+        # Got second message — fail
+        false.should be_true  # "Should not have published identical diagnostics"
+      when timeout(100.milliseconds)
+        # Good — no second message
+        true.should be_true
+      end
+
+      input_write.close rescue nil
+    end
+
+    it "publishes when diagnostics change" do
+      input_read, input_write = IO.pipe
+      output_read, output_write = IO.pipe
+      transport = Lsp::Crystal::Transport::Stdio.new(input: input_read, output: output_write)
+      server = Lsp::Crystal::Server.new(transport)
+
+      diags1 = [Lsp::Crystal::Providers::Diagnostics::Diagnostic.new(
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 0, character: 0),
+          end_pos: Lsp::Crystal::Position.new(line: 0, character: 0)
+        ),
+        severity: 1,
+        source: "crystal",
+        message: "error one"
+      )]
+
+      diags2 = [Lsp::Crystal::Providers::Diagnostics::Diagnostic.new(
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 2, character: 3),
+          end_pos: Lsp::Crystal::Position.new(line: 2, character: 3)
+        ),
+        severity: 2,
+        source: "crystal",
+        message: "error two"
+      )]
+
+      server.publish_diagnostics_if_changed("file:///test.cr", diags1)
+      server.publish_diagnostics_if_changed("file:///test.cr", diags2)
+
+      # Both should have been published — verify by reading two messages
+      2.times do
+        header = output_read.read_line("\r\n").rstrip("\r\n")
+        length = header.split(": ")[1].to_i
+        output_read.read_line("\r\n")  # blank line
+        body = Bytes.new(length)
+        output_read.read_fully(body)
+      end
+
+      input_write.close rescue nil
+    end
+
+    it "clears published cache on didClose" do
+      server = TestClient.new.server
+      diags = [Lsp::Crystal::Providers::Diagnostics::Diagnostic.new(
+        range: Lsp::Crystal::Range.new(
+          start: Lsp::Crystal::Position.new(line: 0, character: 0),
+          end_pos: Lsp::Crystal::Position.new(line: 0, character: 0)
+        ),
+        severity: 1,
+        source: "crystal",
+        message: "test"
+      )]
+      server.publish_diagnostics_if_changed("file:///test.cr", diags)
+      server.clear_published_diagnostics("file:///test.cr")
+      # After clear, publishing same diagnostics should succeed (not skip)
+      # This is a behavioral check — no exception means success
+      server.publish_diagnostics_if_changed("file:///test.cr", diags)
+    end
+  end
+
+  # Phase 2: Multi-File Diagnostic Routing
+  describe "Multi-File Diagnostic Routing" do
+    it "groups diagnostics by file with parse_output_by_file" do
+      output = <<-STDERR
+      In /project/src/foo.cr:10:5
+
+       10 | x = undefined_var
+                ^-------------
+      Error: undefined local variable or method 'undefined_var'
+
+      In /project/src/bar.cr:3:1
+
+        3 | bad_call()
+            ^--------
+      Error: undefined method 'bad_call'
+      STDERR
+
+      result = Lsp::Crystal::Providers::Diagnostics.parse_output_by_file(output)
+      result.keys.should contain("/project/src/foo.cr")
+      result.keys.should contain("/project/src/bar.cr")
+      result["/project/src/foo.cr"].size.should eq(1)
+      result["/project/src/bar.cr"].size.should eq(1)
+      result["/project/src/foo.cr"][0].message.should eq("undefined local variable or method 'undefined_var'")
+      result["/project/src/bar.cr"][0].message.should eq("undefined method 'bad_call'")
+    end
+
+    it "returns empty hash for successful output" do
+      result = Lsp::Crystal::Providers::Diagnostics.parse_output_by_file("")
+      result.should be_empty
+    end
+
+    it "handles multiple errors in same file" do
+      output = <<-STDERR
+      In /project/src/foo.cr:5:3
+
+        5 | x = bad1
+                ^---
+      Error: undefined method 'bad1'
+
+      In /project/src/foo.cr:10:3
+
+       10 | y = bad2
+                ^---
+      Error: undefined method 'bad2'
+      STDERR
+
+      result = Lsp::Crystal::Providers::Diagnostics.parse_output_by_file(output)
+      result["/project/src/foo.cr"].size.should eq(2)
+    end
+
+    it "parse_output still returns flat array" do
+      output = <<-STDERR
+      In /project/src/a.cr:1:1
+
+        1 | err
+            ^--
+      Error: undefined method 'err'
+
+      In /project/src/b.cr:2:1
+
+        2 | err2
+            ^---
+      Error: undefined method 'err2'
+      STDERR
+
+      result = Lsp::Crystal::Providers::Diagnostics.parse_output(output)
+      result.size.should eq(2)
+      result.should be_a(Array(Lsp::Crystal::Providers::Diagnostics::Diagnostic))
+    end
+  end
+
+  # Phase 3: Require Dependency Graph
+  describe "RequireGraph" do
+    it "initializes as not built" do
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.built?.should be_false
+    end
+
+    it "builds from a workspace directory" do
+      Dir.mkdir_p("/tmp/test_rg_build/src")
+      File.write("/tmp/test_rg_build/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_build/src/main.cr", %{require "./helper"\nputs "hello"})
+      File.write("/tmp/test_rg_build/src/helper.cr", "def help; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_build")
+      graph.built?.should be_true
+
+      deps = graph.dependencies("/tmp/test_rg_build/src/main.cr")
+      deps.should contain("/tmp/test_rg_build/src/helper.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_build")
+    end
+
+    it "resolves relative requires" do
+      Dir.mkdir_p("/tmp/test_rg_rel/src/sub")
+      File.write("/tmp/test_rg_rel/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_rel/src/main.cr", %{require "./sub/utils"})
+      File.write("/tmp/test_rg_rel/src/sub/utils.cr", "def util; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_rel")
+
+      deps = graph.dependencies("/tmp/test_rg_rel/src/main.cr")
+      deps.should contain("/tmp/test_rg_rel/src/sub/utils.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_rel")
+    end
+
+    it "computes transitive dependents" do
+      Dir.mkdir_p("/tmp/test_rg_trans/src")
+      File.write("/tmp/test_rg_trans/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_trans/src/a.cr", %{require "./b"})
+      File.write("/tmp/test_rg_trans/src/b.cr", %{require "./c"})
+      File.write("/tmp/test_rg_trans/src/c.cr", "def c; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_trans")
+
+      # Changing C should affect B (requires C) and A (requires B)
+      dependents = graph.transitive_dependents("/tmp/test_rg_trans/src/c.cr")
+      dependents.should contain("/tmp/test_rg_trans/src/b.cr")
+      dependents.should contain("/tmp/test_rg_trans/src/a.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_trans")
+    end
+
+    it "independent files are not dependents" do
+      Dir.mkdir_p("/tmp/test_rg_indep/src")
+      File.write("/tmp/test_rg_indep/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_indep/src/a.cr", %{require "./b"})
+      File.write("/tmp/test_rg_indep/src/b.cr", "def b; end")
+      File.write("/tmp/test_rg_indep/src/c.cr", "def c; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_indep")
+
+      # Changing B should affect A but not C
+      dependents = graph.transitive_dependents("/tmp/test_rg_indep/src/b.cr")
+      dependents.should contain("/tmp/test_rg_indep/src/a.cr")
+      dependents.should_not contain("/tmp/test_rg_indep/src/c.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_indep")
+    end
+
+    it "updates file dependencies" do
+      Dir.mkdir_p("/tmp/test_rg_update/src")
+      File.write("/tmp/test_rg_update/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_update/src/main.cr", %{require "./helper"})
+      File.write("/tmp/test_rg_update/src/helper.cr", "def help; end")
+      File.write("/tmp/test_rg_update/src/utils.cr", "def util; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_update")
+
+      # main.cr now requires utils instead of helper
+      File.write("/tmp/test_rg_update/src/main.cr", %{require "./utils"})
+      graph.update_file("/tmp/test_rg_update/src/main.cr")
+
+      deps = graph.dependencies("/tmp/test_rg_update/src/main.cr")
+      deps.should contain("/tmp/test_rg_update/src/utils.cr")
+      deps.should_not contain("/tmp/test_rg_update/src/helper.cr")
+
+      # helper should no longer have main as dependent
+      helper_deps = graph.direct_dependents("/tmp/test_rg_update/src/helper.cr")
+      helper_deps.should_not contain("/tmp/test_rg_update/src/main.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_update")
+    end
+
+    it "removes file from graph" do
+      Dir.mkdir_p("/tmp/test_rg_remove/src")
+      File.write("/tmp/test_rg_remove/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_remove/src/main.cr", %{require "./helper"})
+      File.write("/tmp/test_rg_remove/src/helper.cr", "def help; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_remove")
+
+      graph.remove_file("/tmp/test_rg_remove/src/main.cr")
+      deps = graph.dependencies("/tmp/test_rg_remove/src/main.cr")
+      deps.should be_empty
+
+      helper_deps = graph.direct_dependents("/tmp/test_rg_remove/src/helper.cr")
+      helper_deps.should_not contain("/tmp/test_rg_remove/src/main.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_remove")
+    end
+
+    it "resolves glob requires" do
+      Dir.mkdir_p("/tmp/test_rg_glob/src/models")
+      File.write("/tmp/test_rg_glob/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_glob/src/main.cr", %{require "./models/*"})
+      File.write("/tmp/test_rg_glob/src/models/user.cr", "class User; end")
+      File.write("/tmp/test_rg_glob/src/models/post.cr", "class Post; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_glob")
+
+      deps = graph.dependencies("/tmp/test_rg_glob/src/main.cr")
+      deps.should contain("/tmp/test_rg_glob/src/models/user.cr")
+      deps.should contain("/tmp/test_rg_glob/src/models/post.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_glob")
+    end
+
+    it "resolves directory form (foo/foo.cr)" do
+      Dir.mkdir_p("/tmp/test_rg_dir/src/mylib")
+      File.write("/tmp/test_rg_dir/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_dir/src/main.cr", %{require "./mylib"})
+      File.write("/tmp/test_rg_dir/src/mylib/mylib.cr", "module MyLib; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_dir")
+
+      deps = graph.dependencies("/tmp/test_rg_dir/src/main.cr")
+      deps.should contain("/tmp/test_rg_dir/src/mylib/mylib.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_dir")
+    end
+
+    it "handles update_file with content parameter" do
+      Dir.mkdir_p("/tmp/test_rg_content/src")
+      File.write("/tmp/test_rg_content/shard.yml", "name: test\n")
+      File.write("/tmp/test_rg_content/src/main.cr", %{require "./a"})
+      File.write("/tmp/test_rg_content/src/a.cr", "def a; end")
+      File.write("/tmp/test_rg_content/src/b.cr", "def b; end")
+
+      graph = Lsp::Crystal::RequireGraph.new
+      graph.build("/tmp/test_rg_content")
+
+      # Update with in-memory content (unsaved buffer)
+      graph.update_file("/tmp/test_rg_content/src/main.cr", %{require "./b"})
+
+      deps = graph.dependencies("/tmp/test_rg_content/src/main.cr")
+      deps.should contain("/tmp/test_rg_content/src/b.cr")
+      deps.should_not contain("/tmp/test_rg_content/src/a.cr")
+    ensure
+      FileUtils.rm_rf("/tmp/test_rg_content")
+    end
+  end
+
+  # Phase 5: Configuration
+  describe "Configuration - precompile_on_idle" do
+    it "defaults to true" do
+      config = Lsp::Crystal::Configuration.new
+      config.precompile_on_idle.should be_true
+    end
+
+    it "can be toggled via settings" do
+      config = Lsp::Crystal::Configuration.new
+      settings = JSON.parse(%{{"crystalLsp": {"precompileOnIdle": false}}})
+      config.update(settings)
+      config.precompile_on_idle.should be_false
+    end
+  end
+
+  # Phase 5: Idle precompile cancellation
+  describe "Idle Precompile" do
+    it "cancel_idle_precompile resets state" do
+      server = TestClient.new.server
+      server.cancel_idle_precompile
+      # Should not raise, just a no-op if no timer set
+    end
+  end
 end

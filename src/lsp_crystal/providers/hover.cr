@@ -9,44 +9,105 @@ module Lsp::Crystal::Providers
       end
     end
 
-    def self.run(document : Document, line : Int32, character : Int32, ast_index : AST::Index? = nil) : HoverResult?
-      # Check if cursor is on a known macro call — instant, no subprocess
+    def self.run(document : Document, line : Int32, character : Int32, ast_index : AST::Index? = nil, tool_cache : ToolResultCache? = nil, server : Server? = nil) : HoverResult?
+      # Tier 1: Check if cursor is on a known macro call — instant, no subprocess
       macro_hover = check_macro_hover(document, line, character)
       return macro_hover if macro_hover
 
+      # Tier 2: Check for expanded macro via crystal tool expand (cached, non-blocking)
+      if srv = server
+        if srv.macro_expand_available?
+          expand_hover = check_expand_hover(document, line, character, tool_cache, srv)
+          return expand_hover if expand_hover
+        end
+      end
+
       file_path = document.path
       # Convert 0-based LSP to 1-based Crystal
-      result = CrystalTool.context(file_path, line + 1, character + 1)
+      crystal_line = line + 1
+      crystal_col = character + 1
+      content_hash = document.content.hash.to_u64
 
-      if result.success
-        begin
-          json = JSON.parse(result.stdout)
-        rescue
-          json = nil
+      # Parallel tool dispatch: run context and implementations concurrently
+      parallel = server.try(&.configuration.parallel_tool_calls) != false
+
+      context_result : CrystalTool::ToolResult? = nil
+      impl_result : CrystalTool::ToolResult? = nil
+
+      if parallel
+        context_chan = Channel(CrystalTool::ToolResult).new(1)
+        impl_chan = Channel(CrystalTool::ToolResult).new(1)
+
+        spawn do
+          r = if cache = tool_cache
+                cache.get_or_fetch("context", file_path, crystal_line, crystal_col, content_hash) do
+                  CrystalTool.context(file_path, crystal_line, crystal_col)
+                end
+              else
+                CrystalTool.context(file_path, crystal_line, crystal_col)
+              end
+          context_chan.send(r)
         end
 
-        if json && json["status"]?.try(&.as_s) == "ok"
-          contexts = json["contexts"]?.try(&.as_a)
-          if contexts && !contexts.empty?
-            content = contexts.map { |c| c["context"].as_s }.join("\n")
-
-            # Try AST index for doc comment lookup (faster than crystal tool)
-            doc_comment = if idx = ast_index
-                           find_doc_comment_via_index(document, line, character, idx)
-                         end
-            doc_comment ||= find_doc_comment(document, line, character)
-
-            value = String.build do |str|
-              str << "```crystal\n#{content}\n```"
-              if doc_comment && !doc_comment.empty?
-                str << "\n\n---\n\n#{doc_comment}"
+        spawn do
+          r = if cache = tool_cache
+                cache.get_or_fetch("implementations", file_path, crystal_line, crystal_col, content_hash) do
+                  CrystalTool.implementations(file_path, crystal_line, crystal_col)
+                end
+              else
+                CrystalTool.implementations(file_path, crystal_line, crystal_col)
               end
-            end
+          impl_chan.send(r)
+        end
 
-            return HoverResult.new(
-              contents: MarkupContent.new(kind: "markdown", value: value)
-            )
+        context_result = context_chan.receive
+        impl_result = impl_chan.receive
+      else
+        context_result = if cache = tool_cache
+                           cache.get_or_fetch("context", file_path, crystal_line, crystal_col, content_hash) do
+                             CrystalTool.context(file_path, crystal_line, crystal_col)
+                           end
+                         else
+                           CrystalTool.context(file_path, crystal_line, crystal_col)
+                         end
+      end
+
+      result = context_result
+      return nil unless result && result.success
+
+      begin
+        json = JSON.parse(result.stdout)
+      rescue
+        json = nil
+      end
+
+      if json && json["status"]?.try(&.as_s) == "ok"
+        contexts = json["contexts"]?.try(&.as_a)
+        if contexts && !contexts.empty?
+          content = contexts.map { |c| c["context"].as_s }.join("\n")
+
+          # Try AST index for doc comment lookup (faster than crystal tool)
+          doc_comment = if idx = ast_index
+                         find_doc_comment_via_index(document, line, character, idx)
+                       end
+
+          # Use pre-fetched impl_result if available, otherwise fetch sequentially
+          doc_comment ||= if ir = impl_result
+                            find_doc_comment_from_result(ir)
+                          else
+                            find_doc_comment(document, line, character)
+                          end
+
+          value = String.build do |str|
+            str << "```crystal\n#{content}\n```"
+            if doc_comment && !doc_comment.empty?
+              str << "\n\n---\n\n#{doc_comment}"
+            end
           end
+
+          return HoverResult.new(
+            contents: MarkupContent.new(kind: "markdown", value: value)
+          )
         end
       end
 
@@ -57,6 +118,11 @@ module Lsp::Crystal::Providers
     private def self.find_doc_comment(document : Document, line : Int32, character : Int32) : String?
       # Try to find where the symbol is defined
       impl_result = CrystalTool.implementations(document.path, line + 1, character + 1)
+      find_doc_comment_from_result(impl_result)
+    end
+
+    # Extract doc comments from an implementations result
+    private def self.find_doc_comment_from_result(impl_result : CrystalTool::ToolResult) : String?
       return nil unless impl_result.success
 
       begin
@@ -113,6 +179,80 @@ module Lsp::Crystal::Providers
       return nil unless info
 
       value = "```crystal\n#{macro_name} #{args_str}\n```\n\n---\n\n#{info}"
+      HoverResult.new(contents: MarkupContent.new(kind: "markdown", value: value))
+    end
+
+    # Tier 2: Check expand cache for user-defined macros
+    private def self.check_expand_hover(document : Document, line : Int32, character : Int32, tool_cache : ToolResultCache?, server : Server) : HoverResult?
+      return nil unless tool_cache
+
+      text = document.line_at(line)
+      return nil unless text
+
+      # Check if cursor is on a method/macro call (a word that could be a macro)
+      start_pos = character
+      while start_pos > 0 && (text[start_pos - 1].alphanumeric? || text[start_pos - 1].in?('_', '?', '!'))
+        start_pos -= 1
+      end
+      end_pos = character
+      while end_pos < text.size && (text[end_pos].alphanumeric? || text[end_pos].in?('_', '?', '!'))
+        end_pos += 1
+      end
+      return nil if start_pos == end_pos
+      word = text[start_pos...end_pos]
+
+      # Skip known macros (handled by Tier 1) and common keywords
+      return nil if MacroExpander.known_macro?(word)
+      return nil if word.in?("def", "class", "module", "struct", "enum", "if", "else", "elsif",
+        "end", "do", "require", "include", "extend", "return", "nil", "true", "false",
+        "self", "super", "abstract", "private", "protected", "lib", "fun", "alias",
+        "type", "typeof", "sizeof", "instance_sizeof", "pointerof", "offsetof",
+        "begin", "rescue", "ensure", "raise", "yield", "with", "case", "when",
+        "while", "until", "for", "break", "next", "in", "of", "as", "as?", "is_a?",
+        "responds_to?", "nil?", "not_nil!", "uninitialized", "annotation", "macro",
+        "select", "asm", "out", "spawn", "puts", "pp", "p", "print")
+
+      file_path = document.path
+      crystal_line = line + 1
+      crystal_col = start_pos + 1
+      content_hash = document.content.hash.to_u64
+
+      # Check cache for a previous expand result
+      cached = tool_cache.get("expand", file_path, crystal_line, crystal_col, content_hash)
+      if cached
+        return format_expand_hover(cached, word)
+      end
+
+      # No cache hit — kick off background expansion (non-blocking)
+      spawn do
+        timeout = server.configuration.macro_expand_timeout.seconds
+        result = CrystalTool.expand_content(document.content, file_path, crystal_line, crystal_col, timeout)
+        if result.success
+          tool_cache.put("expand", file_path, crystal_line, crystal_col, content_hash, result)
+          server.reset_expand_failures
+        else
+          server.record_expand_failure
+        end
+      end
+
+      nil
+    end
+
+    # Format an expand result into hover markdown
+    private def self.format_expand_hover(result : CrystalTool::ToolResult, word : String) : HoverResult?
+      parsed = CrystalTool.parse_expand_result(result)
+      return nil unless parsed
+      return nil if parsed.expansions.empty?
+
+      value = String.build do |str|
+        str << "```crystal\n#{word}\n```\n\n---\n\nExpands to:\n"
+        parsed.expansions.each do |exp|
+          exp.expanded_sources.each do |src|
+            str << "\n```crystal\n#{src.strip}\n```\n"
+          end
+        end
+      end
+
       HoverResult.new(contents: MarkupContent.new(kind: "markdown", value: value))
     end
 

@@ -1080,6 +1080,120 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "WorkspaceIndex" do
+    it "indexes files and searches symbols" do
+      dir = File.tempname("ws_idx")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Alpha\n  def foo\n  end\nend\n")
+      File.write(File.join(dir, "b.cr"), "class Beta\n  def bar\n  end\nend\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      index.indexed?.should be_true
+      index.file_count.should eq(2)
+
+      results = index.search_symbols("")
+      names = results.map(&.name)
+      names.should contain("Alpha")
+      names.should contain("Beta")
+      names.should contain("foo")
+      names.should contain("bar")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "filters symbols by query" do
+      dir = File.tempname("ws_idx")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Alpha\nend\nclass Beta\nend\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      results = index.search_symbols("alpha")
+      results.size.should eq(1)
+      results[0].name.should eq("Alpha")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "searches references across indexed files" do
+      dir = File.tempname("ws_idx")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "foo = 1\nputs foo\n")
+      File.write(File.join(dir, "b.cr"), "foo = 2\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      pattern = /\bfoo\b/
+      refs = index.search_references(pattern)
+      refs.size.should eq(3) # 2 in a.cr, 1 in b.cr
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "invalidates a file on change" do
+      dir = File.tempname("ws_idx")
+      Dir.mkdir_p(dir)
+      File.write(File.join(dir, "a.cr"), "class Old\nend\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      results = index.search_symbols("Old")
+      results.size.should eq(1)
+
+      # Update file content via invalidate_content
+      index.invalidate_content(File.join(dir, "a.cr"), "class New\nend\n")
+
+      results = index.search_symbols("Old")
+      results.size.should eq(0)
+      results = index.search_symbols("New")
+      results.size.should eq(1)
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
+    it "skips lib/ and .crystal/ directories" do
+      dir = File.tempname("ws_idx")
+      Dir.mkdir_p(File.join(dir, "lib"))
+      Dir.mkdir_p(File.join(dir, ".crystal"))
+      File.write(File.join(dir, "src.cr"), "class Src\nend\n")
+      File.write(File.join(dir, "lib", "dep.cr"), "class Dep\nend\n")
+      File.write(File.join(dir, ".crystal", "cache.cr"), "class Cache\nend\n")
+
+      index = Lsp::Crystal::WorkspaceIndex.new
+      index.index(dir)
+
+      index.file_count.should eq(1)
+      results = index.search_symbols("")
+      results.map(&.name).should eq(["Src"])
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+  end
+
+  describe "Document symbol cache" do
+    it "caches and returns stale status" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "def foo\nend\n")
+      doc.symbols_stale?.should be_true
+
+      symbols = Lsp::Crystal::Providers::DocumentSymbol.run(doc)
+      flat = Lsp::Crystal::Providers::DocumentSymbol.run_flat(doc)
+      doc.cache_symbols(symbols, flat)
+
+      doc.symbols_stale?.should be_false
+      doc.cached_symbols.not_nil!.size.should eq(1)
+      doc.cached_flat_symbols.not_nil!.size.should eq(1)
+
+      # Change version to simulate edit
+      doc.version = 2
+      doc.symbols_stale?.should be_true
+    end
+  end
+
   describe "URI.path_within_workspace?" do
     it "returns true for paths within workspace" do
       dir = File.tempname("ws_test")

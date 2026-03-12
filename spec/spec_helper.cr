@@ -26,6 +26,7 @@ require "../src/lsp_crystal/providers/implementation"
 require "../src/lsp_crystal/providers/references"
 require "../src/lsp_crystal/providers/code_action"
 require "../src/lsp_crystal/providers/rename"
+require "../src/lsp_crystal/workspace_index"
 require "../src/lsp_crystal/handlers/lifecycle"
 require "../src/lsp_crystal/handlers/text_sync"
 require "../src/lsp_crystal/handlers/formatting"
@@ -71,7 +72,7 @@ class TestClient
     @input_write.flush
   end
 
-  def read_response : JSON::Any
+  def read_raw_message : JSON::Any
     line = @output_read.read_line("\r\n")
     line = line.rstrip("\r\n")
     length = line.split(": ")[1].to_i
@@ -79,6 +80,14 @@ class TestClient
     body = Bytes.new(length)
     @output_read.read_fully(body)
     JSON.parse(String.new(body))
+  end
+
+  def read_response : JSON::Any
+    loop do
+      msg = read_raw_message
+      # Skip notifications (no id field) — e.g. $/progress, publishDiagnostics
+      return msg if msg["id"]?
+    end
   end
 
   def try_read_response(timeout : Time::Span = 100.milliseconds) : JSON::Any?

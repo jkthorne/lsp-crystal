@@ -161,6 +161,7 @@ module Lsp::Crystal
 
       # Phase 13: Semantic Tokens, Call Hierarchy, Inlay Hints, Code Lens
       @handlers["textDocument/semanticTokens/full"] = Handler.new { |server, msg| Handlers::SemanticTokens.full(server, msg) }
+      @handlers["textDocument/semanticTokens/full/delta"] = Handler.new { |server, msg| Handlers::SemanticTokens.full_delta(server, msg) }
       @handlers["textDocument/prepareCallHierarchy"] = Handler.new { |server, msg| Handlers::CallHierarchy.prepare(server, msg) }
       @handlers["callHierarchy/incomingCalls"] = Handler.new { |server, msg| Handlers::CallHierarchy.incoming_calls(server, msg) }
       @handlers["callHierarchy/outgoingCalls"] = Handler.new { |server, msg| Handlers::CallHierarchy.outgoing_calls(server, msg) }

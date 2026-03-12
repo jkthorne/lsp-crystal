@@ -43,7 +43,7 @@ module Lsp::Crystal::Handlers
               tokenTypes:     Providers::SemanticTokens::TOKEN_TYPES,
               tokenModifiers: Providers::SemanticTokens::TOKEN_MODIFIERS,
             },
-            full: true,
+            full: {delta: true},
           },
           callHierarchyProvider:    true,
           inlayHintProvider:        true,

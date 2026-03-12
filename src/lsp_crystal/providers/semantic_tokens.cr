@@ -1,5 +1,98 @@
 module Lsp::Crystal::Providers
   module SemanticTokens
+    # Stores previous semantic token results for delta computation
+    class TokenCache
+      struct Entry
+        property data : Array(Int32)
+        property result_id : String
+        property version : Int32
+
+        def initialize(@data, @result_id, @version)
+        end
+      end
+
+      struct SemanticTokenEdit
+        include JSON::Serializable
+
+        property start : Int32
+        @[JSON::Field(key: "deleteCount")]
+        property delete_count : Int32
+        property data : Array(Int32)?
+
+        def initialize(@start, @delete_count, @data = nil)
+        end
+      end
+
+      def initialize
+        @entries = Hash(String, Entry).new
+        @mutex = Mutex.new
+        @counter = Atomic(Int64).new(0_i64)
+      end
+
+      def store(uri : String, data : Array(Int32), version : Int32) : String
+        result_id = @counter.add(1).to_s
+        @mutex.synchronize do
+          @entries[uri] = Entry.new(data, result_id, version)
+        end
+        result_id
+      end
+
+      def get(uri : String, result_id : String) : Entry?
+        @mutex.synchronize do
+          entry = @entries[uri]?
+          entry if entry && entry.result_id == result_id
+        end
+      end
+
+      def invalidate(uri : String) : Nil
+        @mutex.synchronize { @entries.delete(uri) }
+      end
+
+      # Compute minimal edits between old and new token data.
+      # Token data is aligned to 5-int boundaries (deltaLine, deltaCol, length, type, modifiers).
+      def self.compute_edits(old_data : Array(Int32), new_data : Array(Int32)) : Array(SemanticTokenEdit)
+        return [] of SemanticTokenEdit if old_data == new_data
+
+        old_size = old_data.size
+        new_size = new_data.size
+
+        # Find common prefix (aligned to 5-int tokens)
+        prefix_len = 0
+        max_prefix = Math.min(old_size, new_size)
+        while prefix_len < max_prefix && old_data[prefix_len] == new_data[prefix_len]
+          prefix_len += 1
+        end
+        # Align down to 5-int boundary
+        prefix_len = (prefix_len // 5) * 5
+
+        # Find common suffix (aligned to 5-int tokens)
+        suffix_len = 0
+        max_suffix = Math.min(old_size, new_size) - prefix_len
+        while suffix_len < max_suffix &&
+              old_data[old_size - 1 - suffix_len] == new_data[new_size - 1 - suffix_len]
+          suffix_len += 1
+        end
+        # Align down to 5-int boundary
+        suffix_len = (suffix_len // 5) * 5
+
+        edit_start = prefix_len
+        old_edit_end = old_size - suffix_len
+        new_edit_end = new_size - suffix_len
+
+        delete_count = old_edit_end - edit_start
+        insert_data = if new_edit_end > edit_start
+                        new_data[edit_start...new_edit_end]
+                      else
+                        nil
+                      end
+
+        [SemanticTokenEdit.new(
+          start: edit_start,
+          delete_count: delete_count,
+          data: insert_data
+        )]
+      end
+    end
     # LSP semantic token types — order matters (index = type ID)
     TOKEN_TYPES = [
       "namespace",    # 0

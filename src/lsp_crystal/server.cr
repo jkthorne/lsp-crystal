@@ -14,6 +14,7 @@ module Lsp::Crystal
     getter request_tracker : RequestTracker
     getter ast_cache : AST::Cache
     getter require_graph : RequireGraph
+    getter semantic_token_cache : Providers::SemanticTokens::TokenCache
     @dispatcher : Dispatcher?
     @diagnostics_channel : Channel(String)
     @pending_diagnostics : Hash(String, Time::Instant)
@@ -37,6 +38,7 @@ module Lsp::Crystal
       @request_tracker = RequestTracker.new
       @ast_cache = AST::Cache.new
       @require_graph = RequireGraph.new
+      @semantic_token_cache = Providers::SemanticTokens::TokenCache.new
       @diagnostics_channel = Channel(String).new(100)
       @pending_diagnostics = Hash(String, Time::Instant).new
       @pending_mutex = Mutex.new

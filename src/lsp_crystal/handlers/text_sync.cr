@@ -75,6 +75,7 @@ module Lsp::Crystal::Handlers
       uri = params["textDocument"]["uri"].as_s
       server.document_store.close(uri)
       server.ast_cache.invalidate(uri)
+      server.semantic_token_cache.invalidate(uri)
       Log.debug { "Closed: #{uri}" }
 
       # Re-index from disk when document is closed

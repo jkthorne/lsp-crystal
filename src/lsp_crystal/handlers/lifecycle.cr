@@ -20,7 +20,7 @@ module Lsp::Crystal::Handlers
           },
           completionProvider: {
             triggerCharacters: [".", ":", "@"],
-            resolveProvider:   false,
+            resolveProvider:   true,
           },
           hoverProvider:              true,
           definitionProvider:         true,

@@ -138,6 +138,7 @@ module Lsp::Crystal
 
       # Phase 7-9: Completion, Document Symbols, Signature Help
       @handlers["textDocument/completion"] = Handler.new { |server, msg| Handlers::Completion.handle(server, msg) }
+      @handlers["completionItem/resolve"] = Handler.new { |server, msg| Handlers::CompletionResolve.handle(server, msg) }
       @handlers["textDocument/documentSymbol"] = Handler.new { |server, msg| Handlers::DocumentSymbol.handle(server, msg) }
       @handlers["textDocument/signatureHelp"] = Handler.new { |server, msg| Handlers::SignatureHelp.handle(server, msg) }
 

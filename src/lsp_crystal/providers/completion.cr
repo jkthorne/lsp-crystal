@@ -74,8 +74,13 @@ module Lsp::Crystal::Providers
       @[JSON::Field(key: "sortText")]
       property sort_text : String?
 
+      property documentation : MarkupContent?
+
+      property data : JSON::Any?
+
       def initialize(@label, @kind = nil, @detail = nil, @insert_text = nil,
-                     @insert_text_format = nil, @sort_text = nil)
+                     @insert_text_format = nil, @sort_text = nil,
+                     @documentation = nil, @data = nil)
       end
     end
 
@@ -95,18 +100,19 @@ module Lsp::Crystal::Providers
       items = [] of CompletionItem
       current_line = document.line_at(line) || ""
       prefix = character <= current_line.size ? current_line[0...character] : current_line
+      uri = document.uri
 
       if prefix.rstrip.ends_with?(".")
-        items.concat(context_completions(document, line, character, workspace_root, workspace_index))
+        items.concat(context_completions(document, line, character, workspace_root, workspace_index, uri))
       else
         word = extract_word(prefix)
         unless word.empty?
           items.concat(keyword_completions(word))
           items.concat(snippet_completions(word))
-          items.concat(document_symbol_completions(document, word))
+          items.concat(document_symbol_completions(document, word, uri))
           # AST-based local var/param completions
           if cache = ast_cache
-            items.concat(ast_context_completions(document, line, character, word, cache))
+            items.concat(ast_context_completions(document, line, character, word, cache, uri))
           end
         end
       end
@@ -114,7 +120,7 @@ module Lsp::Crystal::Providers
       CompletionList.new(is_incomplete: false, items: items)
     end
 
-    private def self.context_completions(document : Document, line : Int32, character : Int32, workspace_root : String?, workspace_index : WorkspaceIndex?) : Array(CompletionItem)
+    private def self.context_completions(document : Document, line : Int32, character : Int32, workspace_root : String?, workspace_index : WorkspaceIndex?, uri : String = "") : Array(CompletionItem)
       items = [] of CompletionItem
 
       # Use crystal tool context to get the type of the expression before the dot
@@ -162,7 +168,7 @@ module Lsp::Crystal::Providers
 
       # Search for methods defined on this type in workspace
       seen = Set(String).new
-      search_type_methods(document, base_type, items, seen)
+      search_type_methods(document, base_type, items, seen, uri)
 
       if idx = workspace_index
         idx.search_type_methods(base_type) do |name, detail|
@@ -172,7 +178,8 @@ module Lsp::Crystal::Providers
             label: name,
             kind: CompletionItemKind::Method.value,
             detail: detail,
-            sort_text: "1_#{name}"
+            sort_text: "1_#{name}",
+            data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new("method"), "container" => JSON::Any.new(base_type)})
           )
         end
       end
@@ -180,7 +187,7 @@ module Lsp::Crystal::Providers
       items
     end
 
-    private def self.search_type_methods(document : Document, type_name : String, items : Array(CompletionItem), seen : Set(String))
+    private def self.search_type_methods(document : Document, type_name : String, items : Array(CompletionItem), seen : Set(String), uri : String = "")
       in_type = false
       depth = 0
 
@@ -212,7 +219,8 @@ module Lsp::Crystal::Providers
                 label: name,
                 kind: CompletionItemKind::Method.value,
                 detail: "#{type_name}##{name}",
-                sort_text: "1_#{name}"
+                sort_text: "1_#{name}",
+                data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new("method"), "container" => JSON::Any.new(type_name)})
               )
             end
           elsif depth == 1 && stripped =~ /^\s*(property|property\?|property!|getter|getter\?|getter!|setter)\s+(\w+)/
@@ -226,7 +234,8 @@ module Lsp::Crystal::Providers
                   label: name,
                   kind: CompletionItemKind::Property.value,
                   detail: "#{type_name}##{name}",
-                  sort_text: "1_#{name}"
+                  sort_text: "1_#{name}",
+                  data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new("property"), "container" => JSON::Any.new(type_name)})
                 )
               end
             end
@@ -239,7 +248,8 @@ module Lsp::Crystal::Providers
                   label: setter_name,
                   kind: CompletionItemKind::Method.value,
                   detail: "#{type_name}##{setter_name}",
-                  sort_text: "1_#{setter_name}"
+                  sort_text: "1_#{setter_name}",
+                  data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new("method"), "container" => JSON::Any.new(type_name)})
                 )
               end
             end
@@ -249,7 +259,7 @@ module Lsp::Crystal::Providers
     end
 
     # AST-based completions for local vars, params, and instance vars at cursor
-    private def self.ast_context_completions(document : Document, line : Int32, character : Int32, word : String, ast_cache : AST::Cache) : Array(CompletionItem)
+    private def self.ast_context_completions(document : Document, line : Int32, character : Int32, word : String, ast_cache : AST::Cache, uri : String = "") : Array(CompletionItem)
       items = [] of CompletionItem
       result = ast_cache.get(document)
       return items unless result && result.success? && (node = result.node)
@@ -268,7 +278,8 @@ module Lsp::Crystal::Providers
           label: name,
           kind: CompletionItemKind::Variable.value,
           detail: "parameter",
-          sort_text: "0_#{name}"
+          sort_text: "0_#{name}",
+          data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new("parameter")})
         )
       end
 
@@ -280,7 +291,8 @@ module Lsp::Crystal::Providers
           label: name,
           kind: CompletionItemKind::Variable.value,
           detail: "local variable",
-          sort_text: "0_#{name}"
+          sort_text: "0_#{name}",
+          data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new("local_variable")})
         )
       end
 
@@ -292,7 +304,8 @@ module Lsp::Crystal::Providers
           label: name,
           kind: CompletionItemKind::Field.value,
           detail: "instance variable",
-          sort_text: "0_#{name}"
+          sort_text: "0_#{name}",
+          data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new("instance_variable")})
         )
       end
 
@@ -332,7 +345,7 @@ module Lsp::Crystal::Providers
       end
     end
 
-    private def self.document_symbol_completions(document : Document, word : String) : Array(CompletionItem)
+    private def self.document_symbol_completions(document : Document, word : String, uri : String = "") : Array(CompletionItem)
       items = [] of CompletionItem
       seen = Set(String).new
 
@@ -340,24 +353,24 @@ module Lsp::Crystal::Providers
         line = line.strip
         if line =~ /^\s*def\s+(\w+[?!]?)/
           name = $1
-          add_if_match(items, seen, name, word, CompletionItemKind::Method)
+          add_if_match(items, seen, name, word, CompletionItemKind::Method, uri)
         elsif line =~ /^\s*(?:class|struct)\s+(\w+)/
           name = $1
-          add_if_match(items, seen, name, word, CompletionItemKind::Class)
+          add_if_match(items, seen, name, word, CompletionItemKind::Class, uri)
         elsif line =~ /^\s*module\s+(\w+)/
           name = $1
-          add_if_match(items, seen, name, word, CompletionItemKind::Module)
+          add_if_match(items, seen, name, word, CompletionItemKind::Module, uri)
         elsif line =~ /^\s*(property|property\?|property!|getter|getter\?|getter!|setter)\s+(\w+)/
           macro_name = $1
           name = $2
-          add_if_match(items, seen, name, word, CompletionItemKind::Property) unless macro_name == "setter"
+          add_if_match(items, seen, name, word, CompletionItemKind::Property, uri) unless macro_name == "setter"
           if macro_name.in?("property", "property!", "setter")
-            add_if_match(items, seen, "#{name}=", word, CompletionItemKind::Method)
+            add_if_match(items, seen, "#{name}=", word, CompletionItemKind::Method, uri)
           end
         elsif line =~ /^\s*(\w+)\s*=/
           name = $1
           if name == name.upcase && name.size > 1
-            add_if_match(items, seen, name, word, CompletionItemKind::Constant)
+            add_if_match(items, seen, name, word, CompletionItemKind::Constant, uri)
           end
         end
       end
@@ -366,15 +379,24 @@ module Lsp::Crystal::Providers
     end
 
     private def self.add_if_match(items : Array(CompletionItem), seen : Set(String),
-                                  name : String, word : String, kind : CompletionItemKind)
+                                  name : String, word : String, kind : CompletionItemKind, uri : String = "")
       return if name == word
       return unless name.starts_with?(word)
       return if seen.includes?(name)
       seen.add(name)
+      kind_str = case kind
+                 when .method?   then "method"
+                 when .class?    then "class"
+                 when .module?   then "module"
+                 when .property? then "property"
+                 when .constant? then "constant"
+                 else                 "symbol"
+                 end
       items << CompletionItem.new(
         label: name,
         kind: kind.value,
-        sort_text: "3_#{name}"
+        sort_text: "3_#{name}",
+        data: JSON::Any.new({"uri" => JSON::Any.new(uri), "name" => JSON::Any.new(name), "kind" => JSON::Any.new(kind_str)})
       )
     end
   end

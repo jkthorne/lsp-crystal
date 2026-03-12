@@ -5443,4 +5443,113 @@ describe Lsp::Crystal do
       client.try(&.close)
     end
   end
+
+  describe "Completion resolve" do
+    it "advertises resolveProvider in capabilities" do
+      client = TestClient.new
+      client.send_request(1, "initialize", {processId: 1, rootUri: "file:///tmp", capabilities: {} of String => String})
+      response = client.read_response
+      capabilities = response["result"]["capabilities"]
+      capabilities["completionProvider"]["resolveProvider"].as_bool.should be_true
+    ensure
+      client.try(&.close)
+    end
+
+    it "returns item unchanged when no data field" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(50, "completionItem/resolve", {
+        label: "def",
+        kind:  14,
+      })
+      resp = client.read_response
+      resp["id"].should eq(50)
+      resp["result"]["label"].as_s.should eq("def")
+    ensure
+      client.try(&.close)
+    end
+
+    it "returns item with data preserved" do
+      client = TestClient.new
+      client.initialize_server
+
+      client.send_request(51, "completionItem/resolve", {
+        label:  "greet",
+        kind:   2,
+        detail: "method",
+        data:   {uri: "file:///tmp/test.cr", name: "greet", kind: "method"},
+      })
+      resp = client.read_response
+      resp["id"].should eq(51)
+      resp["result"]["label"].as_s.should eq("greet")
+      resp["result"]["data"].should_not be_nil
+    ensure
+      client.try(&.close)
+    end
+
+    it "populates data field in completion items" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "def greet\nend\ngr")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 2, 2)
+      greet_item = result.items.find { |i| i.label == "greet" }
+      greet_item.should_not be_nil
+      if item = greet_item
+        item.data.should_not be_nil
+        if data = item.data
+          data["name"].as_s.should eq("greet")
+          data["kind"].as_s.should eq("method")
+          data["uri"].as_s.should eq("file:///t.cr")
+        end
+      end
+    end
+
+    it "does not populate data for keyword completions" do
+      doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "de")
+      result = Lsp::Crystal::Providers::Completion.run(doc, 0, 2)
+      def_item = result.items.find { |i| i.label == "def" && i.kind == 14 }
+      def_item.should_not be_nil
+      # Keywords have no data
+      if item = def_item
+        item.data.should be_nil
+      end
+    end
+
+    it "resolves documentation from AST index" do
+      # Create a temp file with documented method
+      tmp = File.tempname("resolve-test", ".cr")
+      code = "# Greets the user\n# with a message\ndef greet\n  puts \"hello\"\nend\n"
+      File.write(tmp, code)
+
+      begin
+        uri = Lsp::Crystal::URI.path_to_uri(tmp)
+        client = TestClient.new
+        client.initialize_server
+
+        # Index the file
+        client.server.ast_index.index_file(uri, code)
+
+        client.send_request(52, "completionItem/resolve", {
+          label:  "greet",
+          kind:   2,
+          detail: "method",
+          data:   {uri: uri, name: "greet", kind: "method"},
+        })
+        resp = client.read_response
+        resp["id"].should eq(52)
+        result = resp["result"]
+        result["label"].as_s.should eq("greet")
+        doc = result["documentation"]?
+        doc.should_not be_nil
+        if d = doc
+          d["kind"].as_s.should eq("markdown")
+          d["value"].as_s.should contain("Greets the user")
+          d["value"].as_s.should contain("with a message")
+        end
+      ensure
+        File.delete(tmp) rescue nil
+        client.try(&.close)
+      end
+    end
+  end
+
 end

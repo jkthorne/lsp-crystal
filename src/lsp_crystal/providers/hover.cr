@@ -84,7 +84,8 @@ module Lsp::Crystal::Providers
       if json && json["status"]?.try(&.as_s) == "ok"
         contexts = json["contexts"]?.try(&.as_a)
         if contexts && !contexts.empty?
-          content = contexts.map { |c| c["context"].as_s }.join("\n")
+          content = format_contexts(contexts)
+          return nil if content.empty?
 
           # Try AST index for doc comment lookup (faster than crystal tool)
           doc_comment = if idx = ast_index
@@ -112,6 +113,31 @@ module Lsp::Crystal::Providers
       end
 
       nil
+    end
+
+    # Render the `contexts` array from `crystal tool context -f json` into hover text.
+    # Recent Crystal versions emit each context as a `{name => type}` map rather than
+    # a `{"context" => "..."}` object, so read the legacy key when present and otherwise
+    # format the map. Returns "" when nothing renderable is found.
+    def self.format_contexts(contexts : Array(JSON::Any)) : String
+      lines = [] of String
+      contexts.each do |ctx|
+        obj = ctx.as_h?
+        if obj
+          legacy = obj["context"]?.try(&.as_s?)
+          if legacy
+            lines << legacy
+          else
+            obj.each do |name, type|
+              lines << "#{name} : #{type.as_s? || type.to_s}"
+            end
+          end
+        else
+          str = ctx.as_s?
+          lines << str if str
+        end
+      end
+      lines.join("\n")
     end
 
     # Extract doc comments from definition site

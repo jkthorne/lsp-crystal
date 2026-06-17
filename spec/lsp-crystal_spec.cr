@@ -331,6 +331,22 @@ describe Lsp::Crystal do
     end
   end
 
+  describe "Providers::Hover" do
+    it "formats map-shaped contexts from crystal tool context" do
+      contexts = JSON.parse(%([{"self":"Blog","movies":"Array(Movie)","population":"Int64"}]))
+      content = Lsp::Crystal::Providers::Hover.format_contexts(contexts.as_a)
+      content.should contain("self : Blog")
+      content.should contain("movies : Array(Movie)")
+      content.should contain("population : Int64")
+    end
+
+    it "still reads the legacy context key when present" do
+      contexts = JSON.parse(%([{"context":"x : Int32"}]))
+      content = Lsp::Crystal::Providers::Hover.format_contexts(contexts.as_a)
+      content.should eq("x : Int32")
+    end
+  end
+
   describe "Providers::Formatting" do
     it "formats Crystal code" do
       doc = Lsp::Crystal::Document.new("file:///t.cr", "crystal", 1, "def foo\n1+1\nend\n")
